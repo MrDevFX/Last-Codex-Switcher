@@ -8,6 +8,8 @@ A desktop-first account manager for Codex CLI users who work with multiple perso
 
 Codex Switcher keeps account switching, usage checks, backups, privacy controls, and optional browser access in one focused app.
 
+> Forked from [Lampese/codex-switcher](https://github.com/Lampese/codex-switcher). This project has left the fork network and now continues independently.
+
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-1f6feb)
 ![Runtime](https://img.shields.io/badge/runtime-Tauri%202-24c8db)
 ![Frontend](https://img.shields.io/badge/frontend-React%2019-61dafb)
