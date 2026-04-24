@@ -179,7 +179,7 @@ fn find_active_codex_processes() -> anyhow::Result<(Vec<ActiveCodexProcess>, usi
 
     #[cfg(unix)]
     {
-        let mut processes = Vec::new();
+        let mut processes: Vec<ActiveCodexProcess> = Vec::new();
         let mut bg_count = 0;
 
         // Use ps with custom format to get the pid and full command line
