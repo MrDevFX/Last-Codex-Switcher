@@ -1,0 +1,76 @@
+name: Build release installers
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to upload installers to"
+        required: true
+        default: "v1.0.0"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.label }} installers
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Windows
+            os: windows-latest
+          - label: macOS
+            os: macos-latest
+          - label: Linux
+            os: ubuntu-22.04
+
+    steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag }}
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install frontend dependencies
+        run: corepack pnpm install --frozen-lockfile
+
+      - name: Build Tauri bundles
+        run: corepack pnpm build:app
+
+      - name: Upload installers to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag }}
+          fail_on_unmatched_files: false
+          files: |
+            build/tauri-target/release/bundle/**/*.msi
+            build/tauri-target/release/bundle/**/*.exe
+            build/tauri-target/release/bundle/**/*.dmg
+            build/tauri-target/release/bundle/**/*.app.tar.gz
+            build/tauri-target/release/bundle/**/*.deb
+            build/tauri-target/release/bundle/**/*.rpm
+            build/tauri-target/release/bundle/**/*.AppImage
+            build/tauri-target/release/bundle/**/*.tar.gz
+            build/tauri-target/release/bundle/**/*.json
