@@ -2,8 +2,13 @@
 
 use crate::auth::{
     add_account, create_chatgpt_account_from_refresh_token, get_active_account,
-    import_from_auth_json, import_from_auth_json_contents, load_accounts, remove_account,
-    save_accounts, set_active_account, switch_to_account, touch_account,
+    get_full_backup_key, get_or_create_full_backup_key, import_from_auth_json,
+    import_from_auth_json_contents, load_accounts, merge_imported_accounts, remove_account,
+    set_active_account, touch_account,
+};
+use crate::commands::process::{
+    ensure_switch_allowed, prepare_codex_restart_plan, restart_antigravity_background_processes,
+    start_codex_from_restart_plan, stop_codex_for_restart,
 };
 use crate::types::{AccountInfo, AccountsStore, AuthData, ImportAccountsSummary, StoredAccount};
 
@@ -22,23 +27,19 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::{Read, Write};
 
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
-
-#[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
-
 const SLIM_EXPORT_PREFIX: &str = "css1.";
 const SLIM_FORMAT_VERSION: u8 = 1;
 const SLIM_AUTH_API_KEY: u8 = 0;
 const SLIM_AUTH_CHATGPT: u8 = 1;
 
 const FULL_FILE_MAGIC: &[u8; 4] = b"CSWF";
-const FULL_FILE_VERSION: u8 = 1;
+const FULL_FILE_VERSION_LEGACY: u8 = 1;
+const FULL_FILE_VERSION_MACHINE_BOUND: u8 = 2;
 const FULL_SALT_LEN: usize = 16;
 const FULL_NONCE_LEN: usize = 24;
 const FULL_KDF_ITERATIONS: u32 = 210_000;
-const FULL_PRESET_PASSPHRASE: &str = "gT7kQ9mV2xN4pL8sR1dH6zW3cB5yF0uJ_aE7nK2tP9vM4rX1";
+const FULL_KEY_CONTEXT: &[u8] = b"codex-switcher-full-backup-v2";
+const LEGACY_FULL_PRESET_PASSPHRASE: &str = "gT7kQ9mV2xN4pL8sR1dH6zW3cB5yF0uJ_aE7nK2tP9vM4rX1";
 
 const MAX_IMPORT_JSON_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_IMPORT_FILE_BYTES: u64 = 8 * 1024 * 1024;
@@ -126,43 +127,44 @@ pub async fn add_account_from_auth_json_text(
 /// Switch to a different account
 #[tauri::command]
 pub async fn switch_account(account_id: String) -> Result<(), String> {
-    let store = load_accounts().map_err(|e| e.to_string())?;
+    ensure_switch_allowed().map_err(|e| e.to_string())?;
+    ensure_account_exists(&account_id)?;
+    activate_account_on_disk(&account_id)?;
 
-    // Find the account
-    let account = store
+    Ok(())
+}
+
+/// Stop running Codex windows, switch accounts, and relaunch Codex.
+#[tauri::command]
+pub async fn restart_codex_and_switch_account(account_id: String) -> Result<(), String> {
+    ensure_account_exists(&account_id)?;
+
+    let restart_plan = prepare_codex_restart_plan().map_err(|e| e.to_string())?;
+    stop_codex_for_restart(&restart_plan).map_err(|e| e.to_string())?;
+    let switch_result = activate_account_on_disk(&account_id);
+    let restart_result = start_codex_from_restart_plan(&restart_plan).map_err(|e| e.to_string());
+
+    switch_result?;
+    restart_result?;
+
+    Ok(())
+}
+
+fn ensure_account_exists(account_id: &str) -> Result<(), String> {
+    let store = load_accounts().map_err(|e| e.to_string())?;
+    store
         .accounts
         .iter()
-        .find(|a| a.id == account_id)
-        .ok_or_else(|| format!("Account not found: {account_id}"))?;
+        .any(|account| account.id == account_id)
+        .then_some(())
+        .ok_or_else(|| format!("Account not found: {account_id}"))
+}
 
-    // Write to ~/.codex/auth.json
-    switch_to_account(account).map_err(|e| e.to_string())?;
+fn activate_account_on_disk(account_id: &str) -> Result<(), String> {
+    set_active_account(account_id).map_err(|e| e.to_string())?;
+    touch_account(account_id).map_err(|e| e.to_string())?;
 
-    // Update the active account in our store
-    set_active_account(&account_id).map_err(|e| e.to_string())?;
-
-    // Update last_used_at
-    touch_account(&account_id).map_err(|e| e.to_string())?;
-
-    // Restart Antigravity background process if it is running
-    // This allows it to pick up the new authorization file seamlessly
-    if let Ok(pids) = find_antigravity_processes() {
-        for pid in pids {
-            #[cfg(unix)]
-            {
-                let _ = std::process::Command::new("kill")
-                    .arg("-9")
-                    .arg(pid.to_string())
-                    .output();
-            }
-            #[cfg(windows)]
-            {
-                let _ = std::process::Command::new("taskkill")
-                    .args(["/F", "/PID", &pid.to_string()])
-                    .output();
-            }
-        }
-    }
+    restart_antigravity_background_processes();
 
     Ok(())
 }
@@ -177,7 +179,7 @@ pub async fn delete_account(account_id: String) -> Result<(), String> {
 /// Rename an account
 #[tauri::command]
 pub async fn rename_account(account_id: String, new_name: String) -> Result<(), String> {
-    crate::auth::storage::update_account_metadata(&account_id, Some(new_name), None, None, None)
+    crate::auth::storage::update_account_metadata(&account_id, Some(new_name), None, None)
         .map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -208,8 +210,7 @@ pub async fn import_accounts_slim_text(payload: String) -> Result<ImportAccounts
         })?;
     validate_imported_store(&imported).map_err(|e| format!("{e:#}"))?;
 
-    let (merged, summary) = merge_accounts_store(current, imported);
-    save_accounts(&merged).map_err(|e| e.to_string())?;
+    let summary = merge_imported_accounts(imported).map_err(|e| e.to_string())?;
     Ok(ImportAccountsSummary {
         total_in_payload,
         imported_count: summary.imported_count,
@@ -221,8 +222,7 @@ pub async fn import_accounts_slim_text(payload: String) -> Result<ImportAccounts
 #[tauri::command]
 pub async fn export_accounts_full_encrypted_file(path: String) -> Result<(), String> {
     let store = load_accounts().map_err(|e| e.to_string())?;
-    let encrypted =
-        encode_full_encrypted_store(&store, FULL_PRESET_PASSPHRASE).map_err(|e| e.to_string())?;
+    let encrypted = encode_full_encrypted_store(&store).map_err(|e| e.to_string())?;
     write_encrypted_file(&path, &encrypted).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -230,7 +230,7 @@ pub async fn export_accounts_full_encrypted_file(path: String) -> Result<(), Str
 /// Export full account config as encrypted bytes for browser clients.
 pub async fn export_accounts_full_encrypted_bytes() -> Result<Vec<u8>, String> {
     let store = load_accounts().map_err(|e| e.to_string())?;
-    encode_full_encrypted_store(&store, FULL_PRESET_PASSPHRASE).map_err(|e| e.to_string())
+    encode_full_encrypted_store(&store).map_err(|e| e.to_string())
 }
 
 /// Import full account config from an encrypted file, skipping existing accounts.
@@ -239,13 +239,10 @@ pub async fn import_accounts_full_encrypted_file(
     path: String,
 ) -> Result<ImportAccountsSummary, String> {
     let encrypted = read_encrypted_file(&path).map_err(|e| e.to_string())?;
-    let imported = decode_full_encrypted_store(&encrypted, FULL_PRESET_PASSPHRASE)
-        .map_err(|e| e.to_string())?;
+    let imported = decode_full_encrypted_store(&encrypted).map_err(|e| e.to_string())?;
     validate_imported_store(&imported).map_err(|e| e.to_string())?;
 
-    let current = load_accounts().map_err(|e| e.to_string())?;
-    let (merged, summary) = merge_accounts_store(current, imported);
-    save_accounts(&merged).map_err(|e| e.to_string())?;
+    let summary = merge_imported_accounts(imported).map_err(|e| e.to_string())?;
     Ok(summary)
 }
 
@@ -253,79 +250,11 @@ pub async fn import_accounts_full_encrypted_file(
 pub async fn import_accounts_full_encrypted_bytes(
     bytes: Vec<u8>,
 ) -> Result<ImportAccountsSummary, String> {
-    let imported =
-        decode_full_encrypted_store(&bytes, FULL_PRESET_PASSPHRASE).map_err(|e| e.to_string())?;
+    let imported = decode_full_encrypted_store(&bytes).map_err(|e| e.to_string())?;
     validate_imported_store(&imported).map_err(|e| e.to_string())?;
 
-    let current = load_accounts().map_err(|e| e.to_string())?;
-    let (merged, summary) = merge_accounts_store(current, imported);
-    save_accounts(&merged).map_err(|e| e.to_string())?;
+    let summary = merge_imported_accounts(imported).map_err(|e| e.to_string())?;
     Ok(summary)
-}
-
-/// Find all running Antigravity codex assistant processes
-fn find_antigravity_processes() -> anyhow::Result<Vec<u32>> {
-    let mut pids = Vec::new();
-
-    #[cfg(unix)]
-    {
-        // Use ps with custom format to get the pid and full command line
-        let output = std::process::Command::new("ps")
-            .args(["-eo", "pid,command"])
-            .output()?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines().skip(1) {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-
-            if let Some((pid_str, command)) = line.split_once(' ') {
-                let pid_str = pid_str.trim();
-                let command = command.trim();
-
-                // Antigravity processes have a specific path format
-                let is_antigravity = (command.contains(".antigravity/extensions/openai.chatgpt")
-                    || command.contains(".vscode/extensions/openai.chatgpt"))
-                    && (command.ends_with("codex app-server --analytics-default-enabled")
-                        || command.contains("/codex app-server"));
-
-                if is_antigravity {
-                    if let Ok(pid) = pid_str.parse::<u32>() {
-                        pids.push(pid);
-                    }
-                }
-            }
-        }
-    }
-
-    #[cfg(windows)]
-    {
-        // Use tasklist on Windows
-        // For Windows we might need a more precise WMI query to get command line args,
-        // but for now we look for codex.exe PIDs and verify they're not ours
-        let output = std::process::Command::new("tasklist")
-            .creation_flags(CREATE_NO_WINDOW)
-            .args(["/FI", "IMAGENAME eq codex.exe", "/FO", "CSV", "/NH"])
-            .output()?;
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            let parts: Vec<&str> = line.split(',').collect();
-            if parts.len() > 1 {
-                let name = parts[0].trim_matches('"').to_lowercase();
-                if name == "codex.exe" {
-                    let pid_str = parts[1].trim_matches('"');
-                    if let Ok(pid) = pid_str.parse::<u32>() {
-                        pids.push(pid);
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(pids)
 }
 
 fn encode_slim_payload_from_store(store: &AccountsStore) -> anyhow::Result<String> {
@@ -419,7 +348,7 @@ fn validate_slim_payload(payload: &SlimPayload) -> anyhow::Result<()> {
                 if account
                     .api_key
                     .as_ref()
-                    .map_or(true, |key| key.trim().is_empty())
+                    .is_none_or(|key| key.trim().is_empty())
                 {
                     anyhow::bail!("API key is missing for account {}", account.name);
                 }
@@ -428,7 +357,7 @@ fn validate_slim_payload(payload: &SlimPayload) -> anyhow::Result<()> {
                 if account
                     .refresh_token
                     .as_ref()
-                    .map_or(true, |token| token.trim().is_empty())
+                    .is_none_or(|token| token.trim().is_empty())
                 {
                     anyhow::bail!("Refresh token is missing for account {}", account.name);
                 }
@@ -525,7 +454,15 @@ async fn restore_slim_accounts(
     Ok(restored)
 }
 
-fn encode_full_encrypted_store(store: &AccountsStore, passphrase: &str) -> anyhow::Result<Vec<u8>> {
+fn encode_full_encrypted_store(store: &AccountsStore) -> anyhow::Result<Vec<u8>> {
+    let machine_key = get_or_create_full_backup_key()?;
+    encode_full_encrypted_store_with_key(store, &machine_key)
+}
+
+fn encode_full_encrypted_store_with_key(
+    store: &AccountsStore,
+    machine_key: &[u8],
+) -> anyhow::Result<Vec<u8>> {
     let json = serde_json::to_vec(store).context("Failed to serialize account store")?;
     let compressed = compress_bytes(&json).context("Failed to compress account store")?;
 
@@ -535,7 +472,7 @@ fn encode_full_encrypted_store(store: &AccountsStore, passphrase: &str) -> anyho
     let mut nonce = [0u8; FULL_NONCE_LEN];
     rand::rng().fill_bytes(&mut nonce);
 
-    let key = derive_encryption_key(passphrase, &salt);
+    let key = derive_machine_bound_key(machine_key, &salt);
     let cipher = XChaCha20Poly1305::new((&key).into());
     let ciphertext = cipher
         .encrypt(XNonce::from_slice(&nonce), compressed.as_slice())
@@ -543,7 +480,7 @@ fn encode_full_encrypted_store(store: &AccountsStore, passphrase: &str) -> anyho
 
     let mut out = Vec::with_capacity(4 + 1 + FULL_SALT_LEN + FULL_NONCE_LEN + ciphertext.len());
     out.extend_from_slice(FULL_FILE_MAGIC);
-    out.push(FULL_FILE_VERSION);
+    out.push(FULL_FILE_VERSION_MACHINE_BOUND);
     out.extend_from_slice(&salt);
     out.extend_from_slice(&nonce);
     out.extend_from_slice(&ciphertext);
@@ -551,10 +488,22 @@ fn encode_full_encrypted_store(store: &AccountsStore, passphrase: &str) -> anyho
     Ok(out)
 }
 
-fn decode_full_encrypted_store(
-    file_bytes: &[u8],
-    passphrase: &str,
-) -> anyhow::Result<AccountsStore> {
+fn decode_full_encrypted_store(file_bytes: &[u8]) -> anyhow::Result<AccountsStore> {
+    let version = read_full_encrypted_store_version(file_bytes)?;
+    match version {
+        FULL_FILE_VERSION_LEGACY => decode_full_encrypted_store_legacy(file_bytes),
+        FULL_FILE_VERSION_MACHINE_BOUND => {
+            let machine_key = get_full_backup_key().context(
+                "This full backup was exported with the new machine-bound format. \
+Restore it from the original machine/profile, or import a legacy backup and re-export locally.",
+            )?;
+            decode_full_encrypted_store_with_key(file_bytes, &machine_key)
+        }
+        _ => anyhow::bail!("Unsupported encrypted file version: {version}"),
+    }
+}
+
+fn read_full_encrypted_store_version(file_bytes: &[u8]) -> anyhow::Result<u8> {
     if file_bytes.len() as u64 > MAX_IMPORT_FILE_BYTES {
         anyhow::bail!("Encrypted file is too large");
     }
@@ -568,11 +517,37 @@ fn decode_full_encrypted_store(
         anyhow::bail!("Encrypted file header is invalid");
     }
 
-    let version = file_bytes[4];
-    if version != FULL_FILE_VERSION {
-        anyhow::bail!("Unsupported encrypted file version: {version}");
-    }
+    Ok(file_bytes[4])
+}
 
+fn decode_full_encrypted_store_legacy(file_bytes: &[u8]) -> anyhow::Result<AccountsStore> {
+    decode_full_encrypted_store_with_derived_key(
+        file_bytes,
+        |salt| derive_legacy_encryption_key(LEGACY_FULL_PRESET_PASSPHRASE, salt),
+        "Failed to decrypt legacy full backup. The file may be corrupted.",
+    )
+}
+
+fn decode_full_encrypted_store_with_key(
+    file_bytes: &[u8],
+    machine_key: &[u8],
+) -> anyhow::Result<AccountsStore> {
+    decode_full_encrypted_store_with_derived_key(
+        file_bytes,
+        |salt| derive_machine_bound_key(machine_key, salt),
+        "Failed to decrypt full backup. The file may be corrupted, or it belongs to a different machine/profile.",
+    )
+}
+
+fn decode_full_encrypted_store_with_derived_key<F>(
+    file_bytes: &[u8],
+    derive_key: F,
+    decrypt_error: &str,
+) -> anyhow::Result<AccountsStore>
+where
+    F: FnOnce(&[u8]) -> [u8; 32],
+{
+    let version = read_full_encrypted_store_version(file_bytes)?;
     let salt_start = 5;
     let nonce_start = salt_start + FULL_SALT_LEN;
     let ciphertext_start = nonce_start + FULL_NONCE_LEN;
@@ -581,13 +556,15 @@ fn decode_full_encrypted_store(
     let nonce = &file_bytes[nonce_start..ciphertext_start];
     let ciphertext = &file_bytes[ciphertext_start..];
 
-    let key = derive_encryption_key(passphrase, salt);
+    if version != FULL_FILE_VERSION_LEGACY && version != FULL_FILE_VERSION_MACHINE_BOUND {
+        anyhow::bail!("Unsupported encrypted file version: {version}");
+    }
+
+    let key = derive_key(salt);
     let cipher = XChaCha20Poly1305::new((&key).into());
     let compressed = cipher
         .decrypt(XNonce::from_slice(nonce), ciphertext)
-        .map_err(|_| {
-            anyhow::anyhow!("Failed to decrypt file (wrong passphrase or corrupted file)")
-        })?;
+        .map_err(|_| anyhow::anyhow!("{decrypt_error}"))?;
 
     let json = decompress_bytes_with_limit(&compressed, MAX_IMPORT_JSON_BYTES)
         .context("Failed to decompress decrypted payload")?;
@@ -598,7 +575,17 @@ fn decode_full_encrypted_store(
     Ok(store)
 }
 
-fn derive_encryption_key(passphrase: &str, salt: &[u8]) -> [u8; 32] {
+fn derive_machine_bound_key(machine_key: &[u8], salt: &[u8]) -> [u8; 32] {
+    use sha2::Digest;
+
+    let mut digest = Sha256::new();
+    digest.update(FULL_KEY_CONTEXT);
+    digest.update(machine_key);
+    digest.update(salt);
+    digest.finalize().into()
+}
+
+fn derive_legacy_encryption_key(passphrase: &str, salt: &[u8]) -> [u8; 32] {
     let mut key = [0u8; 32];
     pbkdf2_hmac::<Sha256>(passphrase.as_bytes(), salt, FULL_KDF_ITERATIONS, &mut key);
     key
@@ -674,57 +661,6 @@ fn validate_imported_store(store: &AccountsStore) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn merge_accounts_store(
-    mut current: AccountsStore,
-    imported: AccountsStore,
-) -> (AccountsStore, ImportAccountsSummary) {
-    let imported_version = imported.version;
-    let imported_active_id = imported.active_account_id;
-    let total_in_payload = imported.accounts.len();
-    let mut imported_count = 0usize;
-    let mut existing_ids: HashSet<String> = current.accounts.iter().map(|a| a.id.clone()).collect();
-    let mut existing_names: HashSet<String> =
-        current.accounts.iter().map(|a| a.name.clone()).collect();
-
-    for account in imported.accounts {
-        if existing_ids.contains(&account.id) || existing_names.contains(&account.name) {
-            continue;
-        }
-        existing_ids.insert(account.id.clone());
-        existing_names.insert(account.name.clone());
-        current.accounts.push(account);
-        imported_count += 1;
-    }
-
-    current.version = current.version.max(imported_version).max(1);
-
-    let current_active_is_valid = current
-        .active_account_id
-        .as_ref()
-        .is_some_and(|id| current.accounts.iter().any(|a| &a.id == id));
-
-    if !current_active_is_valid {
-        if let Some(imported_active) = imported_active_id {
-            if current.accounts.iter().any(|a| a.id == imported_active) {
-                current.active_account_id = Some(imported_active);
-            } else {
-                current.active_account_id = current.accounts.first().map(|a| a.id.clone());
-            }
-        } else {
-            current.active_account_id = current.accounts.first().map(|a| a.id.clone());
-        }
-    }
-
-    (
-        current,
-        ImportAccountsSummary {
-            total_in_payload,
-            imported_count,
-            skipped_count: total_in_payload.saturating_sub(imported_count),
-        },
-    )
-}
-
 /// Get the list of masked account IDs
 #[tauri::command]
 pub async fn get_masked_account_ids() -> Result<Vec<String>, String> {
@@ -735,4 +671,189 @@ pub async fn get_masked_account_ids() -> Result<Vec<String>, String> {
 #[tauri::command]
 pub async fn set_masked_account_ids(ids: Vec<String>) -> Result<(), String> {
     crate::auth::storage::set_masked_account_ids(ids).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::{add_account, read_current_auth};
+
+    struct TestEnv {
+        _config_dir: tempfile::TempDir,
+        _codex_home: tempfile::TempDir,
+        old_config_dir: Option<String>,
+        old_codex_home: Option<String>,
+        old_backup_key: Option<String>,
+        old_process_override: Option<String>,
+    }
+
+    impl TestEnv {
+        fn new() -> Self {
+            let config_dir = tempfile::tempdir().expect("config temp dir");
+            let codex_home = tempfile::tempdir().expect("codex temp dir");
+            let old_config_dir = std::env::var("CODEX_SWITCHER_CONFIG_DIR").ok();
+            let old_codex_home = std::env::var("CODEX_HOME").ok();
+            let old_backup_key = std::env::var("CODEX_SWITCHER_TEST_BACKUP_KEY").ok();
+            let old_process_override = std::env::var("CODEX_SWITCHER_TEST_ACTIVE_CODEX_COUNT").ok();
+            std::env::set_var("CODEX_SWITCHER_CONFIG_DIR", config_dir.path());
+            std::env::set_var("CODEX_HOME", codex_home.path());
+            std::env::remove_var("CODEX_SWITCHER_TEST_BACKUP_KEY");
+            std::env::remove_var("CODEX_SWITCHER_TEST_ACTIVE_CODEX_COUNT");
+            Self {
+                _config_dir: config_dir,
+                _codex_home: codex_home,
+                old_config_dir,
+                old_codex_home,
+                old_backup_key,
+                old_process_override,
+            }
+        }
+    }
+
+    impl Drop for TestEnv {
+        fn drop(&mut self) {
+            if let Some(value) = &self.old_config_dir {
+                std::env::set_var("CODEX_SWITCHER_CONFIG_DIR", value);
+            } else {
+                std::env::remove_var("CODEX_SWITCHER_CONFIG_DIR");
+            }
+            if let Some(value) = &self.old_codex_home {
+                std::env::set_var("CODEX_HOME", value);
+            } else {
+                std::env::remove_var("CODEX_HOME");
+            }
+            if let Some(value) = &self.old_backup_key {
+                std::env::set_var("CODEX_SWITCHER_TEST_BACKUP_KEY", value);
+            } else {
+                std::env::remove_var("CODEX_SWITCHER_TEST_BACKUP_KEY");
+            }
+            if let Some(value) = &self.old_process_override {
+                std::env::set_var("CODEX_SWITCHER_TEST_ACTIVE_CODEX_COUNT", value);
+            } else {
+                std::env::remove_var("CODEX_SWITCHER_TEST_ACTIVE_CODEX_COUNT");
+            }
+        }
+    }
+
+    fn sample_store() -> AccountsStore {
+        let account = StoredAccount::new_api_key("Backup".to_string(), "sk-backup".to_string());
+        AccountsStore {
+            version: 1,
+            active_account_id: Some(account.id.clone()),
+            accounts: vec![account],
+            masked_account_ids: vec![],
+        }
+    }
+
+    #[test]
+    fn new_full_backup_uses_machine_bound_format() {
+        let _guard = crate::test_support::env_lock();
+        let _env = TestEnv::new();
+
+        let machine_key = vec![7u8; 32];
+        let bytes = encode_full_encrypted_store_with_key(&sample_store(), &machine_key)
+            .expect("encode backup");
+
+        assert_eq!(bytes[..4], *FULL_FILE_MAGIC);
+        assert_eq!(bytes[4], FULL_FILE_VERSION_MACHINE_BOUND);
+    }
+
+    #[test]
+    fn machine_bound_backup_round_trip_requires_matching_key() {
+        let _guard = crate::test_support::env_lock();
+        let _env = TestEnv::new();
+
+        let store = sample_store();
+        let machine_key = vec![9u8; 32];
+        let encrypted =
+            encode_full_encrypted_store_with_key(&store, &machine_key).expect("encode backup");
+        let restored =
+            decode_full_encrypted_store_with_key(&encrypted, &machine_key).expect("decode backup");
+
+        assert_eq!(restored.accounts.len(), 1);
+        assert_eq!(restored.active_account_id, store.active_account_id);
+
+        let wrong_key = vec![3u8; 32];
+        assert!(decode_full_encrypted_store_with_key(&encrypted, &wrong_key).is_err());
+    }
+
+    #[test]
+    fn legacy_full_backup_import_still_works() {
+        let _guard = crate::test_support::env_lock();
+        let _env = TestEnv::new();
+
+        let store = sample_store();
+        let json = serde_json::to_vec(&store).expect("serialize");
+        let compressed = compress_bytes(&json).expect("compress");
+        let salt = [1u8; FULL_SALT_LEN];
+        let nonce = [2u8; FULL_NONCE_LEN];
+        let key = derive_legacy_encryption_key(LEGACY_FULL_PRESET_PASSPHRASE, &salt);
+        let cipher = XChaCha20Poly1305::new((&key).into());
+        let ciphertext = cipher
+            .encrypt(XNonce::from_slice(&nonce), compressed.as_slice())
+            .expect("encrypt");
+
+        let mut encrypted = Vec::new();
+        encrypted.extend_from_slice(FULL_FILE_MAGIC);
+        encrypted.push(FULL_FILE_VERSION_LEGACY);
+        encrypted.extend_from_slice(&salt);
+        encrypted.extend_from_slice(&nonce);
+        encrypted.extend_from_slice(&ciphertext);
+
+        let restored = decode_full_encrypted_store(&encrypted).expect("decode legacy");
+        assert_eq!(restored.accounts.len(), 1);
+        assert_eq!(restored.accounts[0].name, "Backup");
+    }
+
+    // These tests intentionally hold the env lock across await to serialize
+    // process-wide environment mutation while the async command reads it.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn switch_account_rejects_when_codex_is_running() {
+        let _guard = crate::test_support::env_lock();
+        let _env = TestEnv::new();
+
+        let stored = add_account(StoredAccount::new_api_key(
+            "Primary".to_string(),
+            "sk-primary".to_string(),
+        ))
+        .expect("add account");
+        std::env::set_var("CODEX_SWITCHER_TEST_ACTIVE_CODEX_COUNT", "1");
+
+        let result = switch_account(stored.id).await;
+        assert!(result.is_err());
+        assert!(result
+            .expect_err("switch should fail")
+            .contains("Close all running Codex windows"));
+    }
+
+    // These tests intentionally hold the env lock across await to serialize
+    // process-wide environment mutation while the async command reads it.
+    #[allow(clippy::await_holding_lock)]
+    #[tokio::test]
+    async fn restart_codex_and_switch_account_switches_when_no_processes_are_running() {
+        let _guard = crate::test_support::env_lock();
+        let _env = TestEnv::new();
+
+        let _first = add_account(StoredAccount::new_api_key(
+            "Primary".to_string(),
+            "sk-primary".to_string(),
+        ))
+        .expect("add first account");
+        let second = add_account(StoredAccount::new_api_key(
+            "Secondary".to_string(),
+            "sk-secondary".to_string(),
+        ))
+        .expect("add second account");
+        std::env::set_var("CODEX_SWITCHER_TEST_ACTIVE_CODEX_COUNT", "0");
+
+        restart_codex_and_switch_account(second.id.clone())
+            .await
+            .expect("restart switch should succeed");
+
+        let auth = read_current_auth()
+            .expect("read auth")
+            .expect("auth should exist");
+        assert_eq!(auth.openai_api_key.as_deref(), Some("sk-secondary"));
+    }
 }

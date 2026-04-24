@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1168" height="480" viewBox="0 0 1168 480" role="img" aria-labelledby="title desc">
+  <title id="title">Codex Switcher architecture</title>
+  <desc id="desc">Desktop and browser entry points feed into a shared Rust command layer that manages account storage, Codex auth, process safety, usage APIs, and backups.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#cbd5e1"/>
+    </marker>
+    <marker id="arrow-dim" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/>
+    </marker>
+    <style>
+      .bg { fill: #0b1118; }
+      .box { fill: #1a2027; stroke: #8b949e; stroke-width: 1.3; }
+      .main { fill: #122433; stroke: #19b8b0; stroke-width: 1.5; }
+      .text { fill: #f8fafc; font: 16px "Segoe UI", Arial, sans-serif; }
+      .small { fill: #cbd5e1; font: 13px "Segoe UI", Arial, sans-serif; }
+      .line { stroke: #cbd5e1; stroke-width: 1.2; fill: none; marker-end: url(#arrow); }
+      .dash { stroke: #94a3b8; stroke-width: 1.2; fill: none; stroke-dasharray: 3 4; marker-end: url(#arrow-dim); }
+      .label { fill: #2a2f36; stroke: #475569; stroke-width: 0.8; }
+      .accent { fill: #fb923c; font: 700 13px "Segoe UI", Arial, sans-serif; letter-spacing: 4px; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1168" height="480"/>
+
+  <text class="accent" x="80" y="72">CODEX SWITCHER</text>
+  <text class="small" x="80" y="96">Shared command layer for desktop and browser control surfaces</text>
+
+  <rect class="box" x="92" y="150" width="172" height="56"/>
+  <text class="text" x="136" y="184">Desktop user</text>
+
+  <rect class="box" x="92" y="282" width="198" height="56"/>
+  <text class="text" x="128" y="316">Browser dashboard</text>
+
+  <rect class="box" x="346" y="138" width="242" height="80"/>
+  <text class="text" x="394" y="173">Tauri / React app</text>
+  <text class="small" x="414" y="197">native desktop shell</text>
+
+  <rect class="box" x="394" y="282" width="190" height="56"/>
+  <text class="text" x="430" y="316">codex-web API</text>
+
+  <rect class="main" x="672" y="216" width="210" height="70" rx="4"/>
+  <text class="text" x="718" y="245">Rust command</text>
+  <text class="text" x="754" y="268">layer</text>
+
+  <rect class="box" x="968" y="92" width="150" height="56"/>
+  <text class="text" x="995" y="126">Account store</text>
+
+  <rect class="box" x="968" y="172" width="150" height="56"/>
+  <text class="text" x="998" y="206">Codex auth</text>
+
+  <rect class="box" x="968" y="252" width="150" height="56"/>
+  <text class="text" x="994" y="286">Usage APIs</text>
+
+  <rect class="box" x="968" y="332" width="150" height="56"/>
+  <text class="text" x="1000" y="366">Backups</text>
+
+  <rect class="box" x="732" y="366" width="160" height="56"/>
+  <text class="text" x="760" y="400">OS keychain</text>
+
+  <rect class="box" x="676" y="84" width="220" height="56"/>
+  <text class="text" x="718" y="118">Process guard</text>
+
+  <rect class="box" x="922" y="16" width="202" height="56"/>
+  <text class="text" x="950" y="50">Extension app-server</text>
+
+  <path class="line" d="M 264 178 L 338 178"/>
+  <path class="line" d="M 290 310 L 386 310"/>
+  <path class="line" d="M 588 178 C 632 178 632 251 664 251"/>
+  <path class="line" d="M 584 310 C 628 310 632 251 664 251"/>
+
+  <path class="line" d="M 882 237 C 928 214 928 120 960 120"/>
+  <path class="line" d="M 882 248 C 924 242 928 200 960 200"/>
+  <path class="line" d="M 882 263 C 926 266 928 280 960 280"/>
+  <path class="line" d="M 882 276 C 926 298 928 360 960 360"/>
+
+  <path class="line" d="M 968 360 C 930 378 930 394 900 394"/>
+  <path class="line" d="M 777 216 C 777 176 777 164 777 148"/>
+
+  <path class="dash" d="M 896 112 C 928 98 928 50 914 44"/>
+  <rect class="label" x="884" y="54" width="62" height="24"/>
+  <text class="small" x="892" y="71">optional</text>
+</svg>

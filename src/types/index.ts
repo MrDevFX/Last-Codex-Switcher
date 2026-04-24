@@ -1,13 +1,12 @@
 // Types matching the Rust backend
 
-export type AuthMode = "api_key" | "chat_g_p_t";
+export type AuthMode = "api_key" | "chat_gpt";
 
 export interface AccountInfo {
   id: string;
   name: string;
   email: string | null;
   plan_type: string | null;
-  subscription_expires_at: string | null;
   auth_mode: AuthMode;
   is_active: boolean;
   created_at: string;

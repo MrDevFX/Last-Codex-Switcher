@@ -6,6 +6,7 @@ import {
   pickAuthJsonFile,
   type FileSource,
 } from "../lib/platform";
+import { CloseIcon, CopyIcon, ExternalIcon, FolderIcon, RefreshIcon } from "./icons";
 
 interface AddAccountModalProps {
   isOpen: boolean;
@@ -44,11 +45,12 @@ export function AddAccountModal({
     setLoading(false);
     setOauthPending(false);
     setAuthUrl("");
+    setCopied(false);
   };
 
   const handleClose = () => {
     if (oauthPending) {
-      onCancelOAuth();
+      void onCancelOAuth();
     }
     resetForm();
     onClose();
@@ -68,7 +70,6 @@ export function AddAccountModal({
       setOauthPending(true);
       setLoading(false);
 
-      // Wait for completion
       await onCompleteOAuth();
       handleClose();
     } catch (err) {
@@ -111,171 +112,194 @@ export function AddAccountModal({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50">
-      <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-700 rounded-2xl w-full max-w-md mx-4 shadow-xl">
-        {/* Header */}
-        <div className="flex items-center justify-between p-5 border-b border-gray-100 dark:border-gray-800">
-          <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Add Account</h2>
+    <div className="modal-backdrop z-50">
+      <div className="modal-panel panel-surface max-w-2xl">
+        <div className="flex items-center justify-between gap-3 border-b border-[color:var(--border-soft)] px-6 py-5">
+          <div>
+            <div className="section-kicker">Account intake</div>
+            <h2 className="mt-2 text-2xl font-semibold tracking-[-0.04em] text-[color:var(--text-strong)]">
+              Add account
+            </h2>
+          </div>
           <button
+            type="button"
             onClick={handleClose}
-            className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+            className="toolbar-button !min-h-11 !w-11 !rounded-2xl !px-0"
+            title="Close"
           >
-            ✕
+            <CloseIcon className="h-4 w-4" />
           </button>
         </div>
 
-        {/* Tabs */}
-        <div className="flex border-b border-gray-100 dark:border-gray-800">
-          {(["oauth", "import"] as Tab[]).map((tab) => (
-            <button
-              key={tab}
-              onClick={() => {
-                if (tab === "import" && oauthPending) {
-                  void onCancelOAuth().catch((err) => {
-                    console.error("Failed to cancel login:", err);
-                  });
-                  setOauthPending(false);
-                  setLoading(false);
-                }
-                setActiveTab(tab);
-                setError(null);
-              }}
-              className={`flex-1 px-4 py-3 text-sm font-medium transition-colors ${activeTab === tab
-                  ? "text-gray-900 dark:text-gray-100 border-b-2 border-gray-900 dark:border-gray-100 -mb-px"
-                  : "text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300"
-                }`}
-            >
-              {tab === "oauth" ? "ChatGPT Login" : "Import File"}
-            </button>
-          ))}
-        </div>
-
-        {/* Content */}
-        <div className="p-5 space-y-4">
-          {/* Account Name (always shown) */}
-          <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-              Account Name
-            </label>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="e.g., Work Account"
-              className="w-full px-4 py-2.5 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-gray-400 dark:focus:border-gray-500 focus:ring-1 focus:ring-gray-400 dark:focus:ring-gray-500 transition-colors"
-            />
+        <div className="px-6 py-5">
+          <div className="grid gap-2 rounded-[22px] border border-[color:var(--border-soft)] bg-white/5 p-2 sm:grid-cols-2">
+            {(["oauth", "import"] as Tab[]).map((tab) => (
+              <button
+                type="button"
+                key={tab}
+                onClick={() => {
+                  if (tab === "import" && oauthPending) {
+                    void onCancelOAuth().catch((err) => {
+                      console.error("Failed to cancel login:", err);
+                    });
+                    setOauthPending(false);
+                    setLoading(false);
+                  }
+                  setActiveTab(tab);
+                  setError(null);
+                }}
+                className={`tab-button ${activeTab === tab ? "tab-button-active" : ""}`}
+              >
+                {tab === "oauth" ? "ChatGPT login" : "Import file"}
+              </button>
+            ))}
           </div>
 
-          {/* Tab-specific content */}
-          {activeTab === "oauth" && (
-            <div className="text-sm text-gray-500 dark:text-gray-400">
-              {oauthPending ? (
-                <div className="text-center py-4">
-                  <div className="animate-spin h-8 w-8 border-2 border-gray-900 dark:border-gray-100 border-t-transparent rounded-full mx-auto mb-3"></div>
-                  <p className="text-gray-700 dark:text-gray-300 font-medium mb-2">Waiting for browser login...</p>
-                  <p className="text-xs text-gray-500 dark:text-gray-400 mb-4">
-                    Please open the following link in your browser to proceed:
-                  </p>
-                  <div className="flex items-center gap-2 mb-2 bg-gray-50 dark:bg-gray-800 p-2 rounded-lg border border-gray-200 dark:border-gray-700">
-                    <input
-                      type="text"
-                      readOnly
-                      value={authUrl}
-                      className="flex-1 bg-transparent border-none text-xs text-gray-600 dark:text-gray-300 focus:outline-none focus:ring-0 truncate"
-                    />
-                    <button
-                      onClick={() => {
-                        void navigator.clipboard
-                          .writeText(authUrl)
-                          .then(() => {
-                            setCopied(true);
-                            setTimeout(() => setCopied(false), 2000);
-                          })
-                          .catch(() => {
-                            setError("Clipboard unavailable. Copy the link manually.");
-                          });
-                      }}
-                      className={`px-3 py-1.5 border rounded text-xs font-medium transition-colors shrink-0 
-                        ${copied
-                          ? "bg-green-50 dark:bg-green-900/30 border-green-200 dark:border-green-700 text-green-700 dark:text-green-300"
-                          : "bg-white dark:bg-gray-900 border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800"
-                        }`}
-                    >
-                      {copied ? "Copied!" : "Copy"}
-                    </button>
-                    <button
-                      onClick={() => {
-                        void openExternalUrl(authUrl);
-                      }}
-                      className="px-3 py-1.5 bg-gray-900 hover:bg-gray-800 dark:bg-gray-100 dark:hover:bg-gray-200 border border-gray-900 dark:border-gray-100 rounded text-xs font-medium text-white dark:text-gray-900 transition-colors shrink-0"
-                    >
-                      Open
-                    </button>
-                  </div>
-                  {!tauriRuntime && (
-                    <p className="text-xs text-amber-600">
-                      OAuth login must finish on the same host machine because the callback
-                      redirects to `localhost`.
-                    </p>
-                  )}
-                </div>
-              ) : (
-                <p>
-                  Click the button below to generate a login link.
-                  You will need to open it in your browser to authenticate.
-                </p>
-              )}
-            </div>
-          )}
-
-          {activeTab === "import" && (
+          <div className="mt-5 space-y-5">
             <div>
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-                Select auth.json file
+              <label className="mb-2 block text-sm font-medium text-[color:var(--text-muted)]">
+                Account name
               </label>
-              <div className="flex gap-2">
-                <div className="flex-1 px-4 py-2.5 bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg text-sm text-gray-600 dark:text-gray-300 truncate">
-                  {describeFileSource(fileSource)}
-                </div>
-                <button
-                  onClick={handleSelectFile}
-                  className="px-4 py-2.5 bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700 rounded-lg text-sm font-medium text-gray-700 dark:text-gray-200 transition-colors whitespace-nowrap"
-                >
-                  Browse...
-                </button>
-              </div>
-              <p className="text-xs text-gray-400 dark:text-gray-500 mt-2">
-                Import credentials from an existing Codex auth.json file
-              </p>
+              <input
+                type="text"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                placeholder="e.g. Work account"
+                className="field-shell"
+              />
             </div>
-          )}
 
-          {/* Error */}
-          {error && (
-            <div className="p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-lg text-red-600 dark:text-red-300 text-sm">
-              {error}
-            </div>
-          )}
+            {activeTab === "oauth" && (
+              <div className="rounded-[22px] border border-[color:var(--border-soft)] bg-white/5 p-4">
+                {oauthPending ? (
+                  <div className="space-y-4">
+                    <div className="flex items-center gap-3">
+                      <RefreshIcon className="h-5 w-5 animate-spin text-[color:var(--accent)]" />
+                      <div>
+                        <div className="text-sm font-semibold text-[color:var(--text-strong)]">
+                          Waiting for browser login
+                        </div>
+                        <p className="mt-1 text-xs leading-5 text-[color:var(--text-muted)]">
+                          Open the generated link in your browser, then come back here once the
+                          callback lands on localhost.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="rounded-[18px] border border-[color:var(--border-soft)] bg-black/10 p-3">
+                      <div className="text-[11px] uppercase tracking-[0.18em] text-[color:var(--text-faint)]">
+                        Login URL
+                      </div>
+                      <div className="mt-2 break-all text-xs leading-6 text-[color:var(--text-muted)]">
+                        {authUrl}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col gap-3 sm:flex-row">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void navigator.clipboard
+                            .writeText(authUrl)
+                            .then(() => {
+                              setCopied(true);
+                              window.setTimeout(() => setCopied(false), 2000);
+                            })
+                            .catch(() => {
+                              setError("Clipboard unavailable. Copy the link manually.");
+                            });
+                        }}
+                        className="toolbar-button justify-center"
+                      >
+                        <CopyIcon className="h-4 w-4" />
+                        {copied ? "Copied" : "Copy link"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void openExternalUrl(authUrl);
+                        }}
+                        className="toolbar-button toolbar-button-primary justify-center"
+                      >
+                        <ExternalIcon className="h-4 w-4" />
+                        Open in browser
+                      </button>
+                    </div>
+
+                    {!tauriRuntime && (
+                      <p className="text-xs leading-6 text-amber-700 dark:text-amber-200">
+                        OAuth login must finish on the same host machine because the callback
+                        redirects to `localhost`.
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    <div className="section-kicker">Browser flow</div>
+                    <p className="text-sm leading-6 text-[color:var(--text-muted)]">
+                      Generate a login link, finish the authentication in your browser, and the
+                      account will return to this desktop app automatically.
+                    </p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {activeTab === "import" && (
+              <div className="rounded-[22px] border border-[color:var(--border-soft)] bg-white/5 p-4">
+                <label className="mb-2 block text-sm font-medium text-[color:var(--text-muted)]">
+                  Select auth.json file
+                </label>
+                <div className="flex flex-col gap-3 sm:flex-row">
+                  <div className="field-shell flex-1 truncate">
+                    {describeFileSource(fileSource)}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={handleSelectFile}
+                    className="toolbar-button justify-center"
+                  >
+                    <FolderIcon className="h-4 w-4" />
+                    Browse
+                  </button>
+                </div>
+                <p className="mt-3 text-xs leading-6 text-[color:var(--text-faint)]">
+                  Import credentials from an existing Codex `auth.json` file.
+                </p>
+              </div>
+            )}
+
+            {error && (
+              <div className="rounded-[20px] border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm leading-6 text-red-700 dark:text-red-200">
+                {error}
+              </div>
+            )}
+          </div>
         </div>
 
-        {/* Footer */}
-        <div className="flex gap-3 p-5 border-t border-gray-100 dark:border-gray-800">
-          <button
-            onClick={handleClose}
-            className="flex-1 px-4 py-2.5 text-sm font-medium rounded-lg bg-gray-100 hover:bg-gray-200 dark:bg-gray-800 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-200 transition-colors"
-          >
+        <div className="flex flex-col gap-3 border-t border-[color:var(--border-soft)] px-6 py-5 sm:flex-row sm:justify-end">
+          <button type="button" onClick={handleClose} className="toolbar-button justify-center">
             Cancel
           </button>
           <button
-            onClick={activeTab === "oauth" ? handleOAuthLogin : handleImportFile}
+            type="button"
+            onClick={
+              activeTab === "oauth" ? () => void handleOAuthLogin() : () => void handleImportFile()
+            }
             disabled={isPrimaryDisabled}
-            className="flex-1 px-4 py-2.5 text-sm font-medium rounded-lg bg-gray-900 hover:bg-gray-800 dark:bg-gray-100 dark:hover:bg-gray-200 text-white dark:text-gray-900 transition-colors disabled:opacity-50"
+            className="toolbar-button toolbar-button-primary justify-center"
           >
-            {loading
-              ? "Adding..."
-              : activeTab === "oauth"
-                ? "Generate Login Link"
-                : "Import"}
+            {activeTab === "oauth" ? (
+              <>
+                <ExternalIcon className="h-4 w-4" />
+                {loading ? "Generating..." : "Generate login link"}
+              </>
+            ) : (
+              <>
+                <FolderIcon className="h-4 w-4" />
+                {loading ? "Importing..." : "Import account"}
+              </>
+            )}
           </button>
         </div>
       </div>

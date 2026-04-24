@@ -18,8 +18,7 @@ const VERSION_FILES = [
   "src-tauri/Cargo.lock",
 ];
 
-const readFile = (relativePath) =>
-  fs.readFileSync(path.join(root, relativePath), "utf8");
+const readFile = (relativePath) => fs.readFileSync(path.join(root, relativePath), "utf8");
 
 const run = (command, args, options = {}) => {
   execFileSync(command, args, {

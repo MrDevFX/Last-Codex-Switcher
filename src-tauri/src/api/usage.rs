@@ -1,15 +1,12 @@
 //! Usage API client for fetching rate limits and credits
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
 use futures::{stream, StreamExt};
 use reqwest::{
     header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, USER_AGENT},
     StatusCode,
 };
-use serde::Deserialize;
 use serde_json::{json, Value};
-use std::collections::HashMap;
 
 use crate::auth::{ensure_chatgpt_tokens_fresh, refresh_chatgpt_tokens};
 use crate::types::{
@@ -18,43 +15,9 @@ use crate::types::{
 };
 
 const CHATGPT_BACKEND_API: &str = "https://chatgpt.com/backend-api";
-const CHATGPT_ACCOUNTS_CHECK_API: &str =
-    "https://chatgpt.com/backend-api/accounts/check/v4-2023-04-27";
 const CHATGPT_CODEX_RESPONSES_API: &str = "https://chatgpt.com/backend-api/codex/responses";
 const OPENAI_API: &str = "https://api.openai.com/v1";
 const CODEX_USER_AGENT: &str = "codex-cli/1.0.0";
-
-#[derive(Debug, Clone)]
-pub struct ChatGptAccountMetadata {
-    pub plan_type: Option<String>,
-    pub subscription_expires_at: Option<DateTime<Utc>>,
-}
-
-#[derive(Debug, Deserialize)]
-struct AccountsCheckResponse {
-    #[serde(default)]
-    accounts: HashMap<String, AccountsCheckEntry>,
-}
-
-#[derive(Debug, Deserialize)]
-struct AccountsCheckEntry {
-    #[serde(default)]
-    account: Option<AccountsCheckAccount>,
-    #[serde(default)]
-    entitlement: Option<AccountsCheckEntitlement>,
-}
-
-#[derive(Debug, Deserialize)]
-struct AccountsCheckAccount {
-    #[serde(default)]
-    plan_type: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct AccountsCheckEntitlement {
-    #[serde(default)]
-    expires_at: Option<DateTime<Utc>>,
-}
 
 /// Get usage information for an account
 pub async fn get_account_usage(account: &StoredAccount) -> Result<UsageInfo> {
@@ -75,7 +38,7 @@ pub async fn get_account_usage(account: &StoredAccount) -> Result<UsageInfo> {
                 has_credits: None,
                 unlimited_credits: None,
                 credits_balance: None,
-                error: Some("Usage info not available for API key accounts".to_string()),
+                error: None,
             })
         }
         AuthData::ChatGPT { .. } => get_usage_with_chatgpt_auth(account).await,
@@ -93,43 +56,6 @@ pub async fn warmup_account(account: &StoredAccount) -> Result<()> {
         AuthData::ApiKey { key } => warmup_with_api_key(key).await,
         AuthData::ChatGPT { .. } => warmup_with_chatgpt_auth(account).await,
     }
-}
-
-pub async fn fetch_chatgpt_account_metadata(
-    account: &StoredAccount,
-) -> Result<ChatGptAccountMetadata> {
-    let (access_token, chatgpt_account_id) = extract_chatgpt_auth(account)?;
-    let response =
-        send_chatgpt_get_request(CHATGPT_ACCOUNTS_CHECK_API, access_token, chatgpt_account_id)
-            .await?;
-
-    let status = response.status();
-    if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        anyhow::bail!("Accounts check API error: {status} - {body}");
-    }
-
-    let payload: AccountsCheckResponse = response
-        .json()
-        .await
-        .context("Failed to parse accounts check response")?;
-
-    let selected_entry = chatgpt_account_id
-        .and_then(|account_id| payload.accounts.get(account_id))
-        .or_else(|| payload.accounts.get("default"))
-        .or_else(|| payload.accounts.values().next())
-        .context("Accounts check response did not include an account entry")?;
-
-    Ok(ChatGptAccountMetadata {
-        plan_type: selected_entry
-            .account
-            .as_ref()
-            .and_then(|account| account.plan_type.clone()),
-        subscription_expires_at: selected_entry
-            .entitlement
-            .as_ref()
-            .and_then(|entitlement| entitlement.expires_at),
-    })
 }
 
 async fn get_usage_with_chatgpt_auth(account: &StoredAccount) -> Result<UsageInfo> {
@@ -322,29 +248,17 @@ async fn send_chatgpt_usage_request(
     access_token: &str,
     chatgpt_account_id: Option<&str>,
 ) -> Result<reqwest::Response> {
-    send_chatgpt_get_request(
-        &format!("{CHATGPT_BACKEND_API}/wham/usage"),
-        access_token,
-        chatgpt_account_id,
-    )
-    .await
-}
-
-async fn send_chatgpt_get_request(
-    url: &str,
-    access_token: &str,
-    chatgpt_account_id: Option<&str>,
-) -> Result<reqwest::Response> {
     let client = reqwest::Client::new();
     let headers = build_chatgpt_headers(access_token, chatgpt_account_id)?;
+    let url = format!("{CHATGPT_BACKEND_API}/wham/usage");
     println!("[Usage] Requesting: {url}");
 
     client
-        .get(url)
+        .get(&url)
         .headers(headers)
         .send()
         .await
-        .with_context(|| format!("Failed to send GET request to {url}"))
+        .context("Failed to send usage request")
 }
 
 async fn send_chatgpt_warmup_request(
@@ -493,7 +407,7 @@ fn extract_credits(credits: Option<CreditStatusDetails>) -> Option<CreditStatusD
 pub async fn refresh_all_usage(accounts: &[StoredAccount]) -> Vec<UsageInfo> {
     println!("[Usage] Refreshing usage for {} accounts", accounts.len());
 
-    let concurrency = accounts.len().min(10).max(1);
+    let concurrency = accounts.len().clamp(1, 10);
     let results: Vec<UsageInfo> = stream::iter(accounts.iter().cloned())
         .map(|account| async move {
             match get_account_usage(&account).await {
@@ -510,4 +424,24 @@ pub async fn refresh_all_usage(accounts: &[StoredAccount]) -> Vec<UsageInfo> {
 
     println!("[Usage] Refresh complete");
     results
+}
+
+#[cfg(test)]
+mod tests {
+    use super::get_account_usage;
+    use crate::types::StoredAccount;
+
+    #[tokio::test]
+    async fn api_key_usage_is_an_expected_no_data_state() {
+        let account = StoredAccount::new_api_key("API".to_string(), "sk-test".to_string());
+        let usage = get_account_usage(&account)
+            .await
+            .expect("API key usage should not fail");
+
+        assert_eq!(usage.account_id, account.id);
+        assert_eq!(usage.plan_type.as_deref(), Some("api_key"));
+        assert!(usage.primary_used_percent.is_none());
+        assert!(usage.secondary_used_percent.is_none());
+        assert!(usage.error.is_none());
+    }
 }

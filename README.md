@@ -1,94 +1,254 @@
 <p align="center">
-  <img src="src-tauri/icons/logo.svg" alt="Codex Switcher" width="128" height="128">
+  <img src="src-tauri/icons/logo.svg" alt="Codex Switcher" width="120" height="120">
 </p>
 
-<h1 align="center">Codex Switcher</h1>
+# Codex Switcher
 
-<p align="center">
-  A Desktop Application for Managing Multiple OpenAI <a href="https://github.com/openai/codex">Codex CLI</a> Accounts<br>
-  Easily switch between accounts, monitor usage limits, and stay in control of your quota
-</p>
+A desktop-first account manager for Codex CLI users who work with multiple personal OpenAI or ChatGPT accounts.
 
-## Features
+Codex Switcher keeps account switching, usage checks, backups, privacy controls, and optional browser access in one focused app.
 
-- **Multi-Account Management** – Add and manage multiple Codex accounts in one place
-- **Quick Switching** – Switch between accounts with a single click
-- **Usage Monitoring** – View real-time usage for both 5-hour and weekly limits
-- **Dual Login Mode** – OAuth authentication or import existing `auth.json` files
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-1f6feb)
+![Runtime](https://img.shields.io/badge/runtime-Tauri%202-24c8db)
+![Frontend](https://img.shields.io/badge/frontend-React%2019-61dafb)
+![Backend](https://img.shields.io/badge/backend-Rust-b7410e)
+![Status](https://img.shields.io/badge/status-active-22c55e)
 
-## Installation
+Quick Start | Features | Browser Mode | Backups | Development | Safety Notes
 
-### Prerequisites
+> The browser server binds to `127.0.0.1` by default. LAN access requires HTTP Basic auth.
 
-- [Node.js](https://nodejs.org/) (v18+)
-- [pnpm](https://pnpm.io/)
-- [Rust](https://rustup.rs/)
+## Interface Preview
 
-### Build from Source
+![Codex Switcher interface preview](docs/assets/interface-preview.png)
+
+## Why Codex Switcher
+
+Codex Switcher is built for people who legitimately own multiple Codex-compatible accounts and want a safer way to move between them without manually editing `auth.json`.
+
+It gives you:
+
+- One place to manage Codex accounts
+- Fast account switching with process-safety checks
+- Usage visibility for account limits
+- Restart-and-switch support when Codex is already running
+- Slim text import/export and encrypted full backups
+- Optional local browser dashboard for LAN or remote-host workflows
+
+## Feature Set
+
+### Account Switching
+
+Switch the active Codex account from a desktop UI. The app updates the local Codex auth file and refreshes last-used metadata.
+
+### Restart Switching
+
+When enabled, Codex Switcher can close running Codex windows, switch accounts, and reopen the captured Codex process command.
+
+### Usage Checks
+
+Refresh account usage, warm up accounts, and see 5-hour and weekly limit state from the dashboard.
+
+### Imports and Backups
+
+Import existing `auth.json` files, export compact slim text payloads, or create encrypted full `.cswf` backups.
+
+### Privacy Controls
+
+Mask account names, emails, and initials across the UI when sharing your screen.
+
+### Browser Mode
+
+Serve the same dashboard over HTTP for local browser testing, LAN access, Tailscale, or remote-host workflows.
+
+## Control Surfaces
+
+| Surface | Best For | Notes |
+| --- | --- | --- |
+| Desktop app | Daily use | Tauri shell with native dialogs and updater support |
+| Browser dashboard | Local/LAN testing | Runs through the `codex-web` server |
+| Slim transfer | Quick migration | Compact text import/export for account definitions |
+| Full backup | Local recovery | Encrypted `.cswf` backup bound to the current machine/profile |
+
+## Architecture
+
+The desktop app and browser dashboard share the same Rust command layer, so account switching and backup behavior stay consistent across both surfaces.
+
+![Codex Switcher architecture](docs/assets/architecture.svg)
+
+## Quick Start
+
+### 1. Install prerequisites
+
+- Node.js 18+
+- pnpm through Corepack
+- Rust through rustup
+
+### 2. Install dependencies
 
 ```bash
-# Clone the repository
-git clone https://github.com/Lampese/codex-switcher.git
-cd codex-switcher
-
-# Install dependencies
-pnpm install
-
-# Run in development mode
-pnpm tauri dev
-
-# Build for production
-pnpm tauri build
+corepack pnpm install
 ```
 
-The built application will be in `src-tauri/target/release/bundle/`.
-
-### Run the Dashboard in a Browser
-
-You can also serve the built dashboard over HTTP instead of opening the Tauri shell.
+### 3. Run the desktop app in development
 
 ```bash
-# Build the frontend and start the web server on 0.0.0.0:3210
-pnpm lan
+corepack pnpm tauri dev
 ```
 
-Optional environment variables:
+### 4. Build the desktop app
 
-- `CODEX_SWITCHER_WEB_HOST` to override the bind host
-- `CODEX_SWITCHER_WEB_PORT` to override the port
+```bash
+corepack pnpm build:app
+```
 
-The browser dashboard serves the same UI and backend actions through `/api/invoke/*`, which makes it usable over LAN, Tailscale, or a remote host tunnel when you expose the chosen port safely.
+Build outputs:
 
-## Disclaimer
+- Frontend files: `build/web/`
+- Desktop executable: `build/tauri-target/release/codex-switcher.exe`
+- Installers: `build/tauri-target/release/bundle/`
 
-This tool is designed **exclusively for individuals who personally own multiple OpenAI/ChatGPT accounts**. It is intended to help users manage their own accounts more conveniently.
+For signed updater artifacts:
 
-**This tool is NOT intended for:**
+```bash
+corepack pnpm build:app:signed
+```
 
-- Sharing accounts between multiple users
-- Circumventing OpenAI's terms of service
-- Any form of account pooling or credential sharing
+## Browser Mode
 
-By using this software, you agree that you are the rightful owner of all accounts you add to the application. The authors are not responsible for any misuse or violations of OpenAI's terms of service.
+Build the frontend and start the local web server:
+
+```bash
+corepack pnpm lan
+```
+
+Open:
+
+```text
+http://127.0.0.1:3210
+```
+
+### LAN Access
+
+PowerShell:
+
+```powershell
+$env:CODEX_SWITCHER_WEB_HOST="0.0.0.0"
+$env:CODEX_SWITCHER_WEB_PASSWORD="change-me"
+corepack pnpm lan
+```
+
+Bash:
+
+```bash
+CODEX_SWITCHER_WEB_HOST=0.0.0.0 CODEX_SWITCHER_WEB_PASSWORD=change-me corepack pnpm lan
+```
+
+Open from another device:
+
+```text
+http://YOUR_PC_IP:3210
+```
+
+HTTP Basic auth username:
+
+```text
+codex
+```
+
+## Configuration
+
+| Variable | Required | Description |
+| --- | --- | --- |
+| `CODEX_HOME` | No | Overrides the Codex config directory used for `auth.json` |
+| `CODEX_SWITCHER_CONFIG_DIR` | No | Overrides the Codex Switcher account store directory |
+| `CODEX_SWITCHER_WEB_HOST` | No | Browser server bind host, defaults to `127.0.0.1` |
+| `CODEX_SWITCHER_WEB_PORT` | No | Browser server port, defaults to `3210` |
+| `CODEX_SWITCHER_WEB_PASSWORD` | Required for non-loopback | Enables HTTP Basic auth for browser mode |
+| `CODEX_SWITCHER_WEB_TOKEN` | No | Legacy alias for `CODEX_SWITCHER_WEB_PASSWORD` |
+
+## Backups
+
+Codex Switcher supports two backup paths.
+
+| Format | Best For | Security Model |
+| --- | --- | --- |
+| Slim text | Quick transfer | Compact payload containing account secrets |
+| Full `.cswf` | Local recovery | Encrypted with a machine-bound key stored in the OS keychain |
+
+New full backups are machine-bound. A `.cswf` file exported on one machine/profile can only be restored from the same machine/profile.
+
+Legacy `.cswf` backups using the older built-in passphrase format remain importable, but new exports use the machine-bound format.
+
+## Process Safety
+
+Codex Switcher checks for running Codex app instances before switching accounts.
+
+Current behavior:
+
+- Normal switching is blocked while live Codex windows are running.
+- Restart switching can close Codex, switch accounts, and reopen captured Codex processes.
+- Matching Antigravity/OpenAI extension app-server processes are restarted after account activation so they pick up the new auth file.
+- Background or stale Codex helper processes are ignored when they are not active app windows.
+
+## Development
+
+Useful commands:
+
+```bash
+corepack pnpm typecheck
+corepack pnpm test
+corepack pnpm format:check
+cargo fmt --check --manifest-path src-tauri/Cargo.toml
+cargo test --manifest-path src-tauri/Cargo.toml
+cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+```
+
+Project layout:
+
+```text
+.
+|-- src/              React app
+|-- src-tauri/        Rust backend and Tauri shell
+|-- scripts/          Build, LAN, and release helpers
+|-- public/           Static frontend assets
+`-- build/            Generated build output
+```
 
 ## Versioning
 
-Use the version bump helper to keep app versions in sync across Tauri, Cargo, and the frontend.
+Keep package, Tauri, Cargo, and lockfile versions in sync:
 
 ```bash
-# Exact version
-pnpm version:bump 0.2.1
-
-# Semver bumps
-pnpm version:patch
-pnpm version:minor
-pnpm version:major
-
-# Prepare a release commit and tag
-# This automatically runs the version bump first.
-pnpm release patch
-
-# Prepare and push a release
-# This automatically runs the version bump first.
-pnpm release patch -- --push
+corepack pnpm version:patch
+corepack pnpm version:minor
+corepack pnpm version:major
 ```
+
+Prepare a release commit and tag:
+
+```bash
+corepack pnpm release patch
+```
+
+Prepare and push:
+
+```bash
+corepack pnpm release patch -- --push
+```
+
+## Safety Notes
+
+Codex Switcher is intended for accounts you personally own.
+
+It is not intended for:
+
+- Sharing accounts between multiple users
+- Account pooling
+- Circumventing OpenAI terms or usage policies
+
+Slim exports contain account secrets. Treat them like credentials.
+
+## Summary
+
+Codex Switcher is a focused desktop utility for managing multiple personal Codex accounts with safer switching, clear usage visibility, encrypted local backups, and an optional browser dashboard for controlled local or LAN access.

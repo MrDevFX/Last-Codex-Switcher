@@ -1,33 +1,55 @@
 //! Account storage module - manages reading and writing accounts.json
 
-use std::fs;
-use std::path::PathBuf;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
+use tempfile::NamedTempFile;
 
-use crate::types::{AccountsStore, AuthData, StoredAccount};
+use super::switcher::{clear_current_auth, switch_to_account};
+use crate::types::{AccountsStore, AuthData, ImportAccountsSummary, StoredAccount};
+
+const STORE_FILENAME: &str = "accounts.json";
+const LOCK_TIMEOUT: Duration = Duration::from_secs(10);
+const LOCK_RETRY_DELAY: Duration = Duration::from_millis(50);
+const STALE_LOCK_MAX_AGE: Duration = Duration::from_secs(30);
 
 /// Get the path to the codex-switcher config directory
 pub fn get_config_dir() -> Result<PathBuf> {
+    if let Ok(override_dir) = std::env::var("CODEX_SWITCHER_CONFIG_DIR") {
+        let trimmed = override_dir.trim();
+        if !trimmed.is_empty() {
+            return Ok(PathBuf::from(trimmed));
+        }
+    }
+
     let home = dirs::home_dir().context("Could not find home directory")?;
     Ok(home.join(".codex-switcher"))
 }
 
 /// Get the path to accounts.json
 pub fn get_accounts_file() -> Result<PathBuf> {
-    Ok(get_config_dir()?.join("accounts.json"))
+    Ok(get_config_dir()?.join(STORE_FILENAME))
+}
+
+fn get_accounts_lock_file() -> Result<PathBuf> {
+    Ok(get_config_dir()?.join(format!("{STORE_FILENAME}.lock")))
 }
 
 /// Load the accounts store from disk
 pub fn load_accounts() -> Result<AccountsStore> {
-    let path = get_accounts_file()?;
+    load_accounts_from_path(&get_accounts_file()?)
+}
 
+fn load_accounts_from_path(path: &Path) -> Result<AccountsStore> {
     if !path.exists() {
         return Ok(AccountsStore::default());
     }
 
-    let content = fs::read_to_string(&path)
+    let content = fs::read_to_string(path)
         .with_context(|| format!("Failed to read accounts file: {}", path.display()))?;
 
     let store: AccountsStore = serde_json::from_str(&content)
@@ -36,163 +58,411 @@ pub fn load_accounts() -> Result<AccountsStore> {
     Ok(store)
 }
 
-/// Save the accounts store to disk
+/// Save the accounts store to disk.
 pub fn save_accounts(store: &AccountsStore) -> Result<()> {
+    let _lock = acquire_store_lock()?;
     let path = get_accounts_file()?;
+    write_accounts_store_atomic(&path, store)?;
+    sync_active_auth_for_store(store)?;
+    Ok(())
+}
 
-    // Ensure the config directory exists
+fn mutate_store<T, F>(sync_active_auth: bool, mutator: F) -> Result<T>
+where
+    F: FnOnce(&mut AccountsStore) -> Result<T>,
+{
+    let _lock = acquire_store_lock()?;
+    let path = get_accounts_file()?;
+    let mut store = load_accounts_from_path(&path)?;
+    let output = mutator(&mut store)?;
+    write_accounts_store_atomic(&path, &store)?;
+    if sync_active_auth {
+        sync_active_auth_for_store(&store)?;
+    }
+    Ok(output)
+}
+
+fn write_accounts_store_atomic(path: &Path, store: &AccountsStore) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("Failed to create config directory: {}", parent.display()))?;
     }
 
-    let content =
-        serde_json::to_string_pretty(store).context("Failed to serialize accounts store")?;
+    let content = serde_json::to_vec_pretty(store).context("Failed to serialize accounts store")?;
+    write_bytes_atomic(path, &content)
+}
 
-    fs::write(&path, content)
-        .with_context(|| format!("Failed to write accounts file: {}", path.display()))?;
+fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .context("Atomic write path did not have a parent directory")?;
 
-    // Set restrictive permissions on Unix
+    let mut temp_file = NamedTempFile::new_in(parent)
+        .with_context(|| format!("Failed to create temp file in {}", parent.display()))?;
+    temp_file
+        .write_all(bytes)
+        .with_context(|| format!("Failed to write temp file for {}", path.display()))?;
+    temp_file
+        .flush()
+        .with_context(|| format!("Failed to flush temp file for {}", path.display()))?;
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let perms = fs::Permissions::from_mode(0o600);
-        fs::set_permissions(&path, perms)?;
+        fs::set_permissions(temp_file.path(), fs::Permissions::from_mode(0o600)).with_context(
+            || format!("Failed to set temp file permissions for {}", path.display()),
+        )?;
+    }
+
+    let temp_path = temp_file.into_temp_path();
+    replace_file(temp_path.as_ref(), path)?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+            .with_context(|| format!("Failed to set file permissions for {}", path.display()))?;
     }
 
     Ok(())
+}
+
+#[cfg(not(windows))]
+fn replace_file(source: &Path, destination: &Path) -> Result<()> {
+    fs::rename(source, destination).with_context(|| {
+        format!(
+            "Failed to atomically replace {} with {}",
+            destination.display(),
+            source.display()
+        )
+    })
+}
+
+#[cfg(windows)]
+fn replace_file(source: &Path, destination: &Path) -> Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    if !destination.exists() {
+        return fs::rename(source, destination).with_context(|| {
+            format!(
+                "Failed to move {} into place at {}",
+                source.display(),
+                destination.display()
+            )
+        });
+    }
+
+    let source_wide: Vec<u16> = source
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let destination_wide: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    let replaced = unsafe {
+        MoveFileExW(
+            source_wide.as_ptr(),
+            destination_wide.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+
+    if replaced == 0 {
+        return Err(std::io::Error::last_os_error()).with_context(|| {
+            format!(
+                "Failed to atomically replace {} with {}",
+                destination.display(),
+                source.display()
+            )
+        });
+    }
+
+    Ok(())
+}
+
+fn sync_active_auth_for_store(store: &AccountsStore) -> Result<()> {
+    let Some(active_id) = store.active_account_id.as_deref() else {
+        clear_current_auth()?;
+        return Ok(());
+    };
+
+    let Some(account) = store
+        .accounts
+        .iter()
+        .find(|account| account.id == active_id)
+    else {
+        clear_current_auth()?;
+        return Ok(());
+    };
+
+    switch_to_account(account)
+}
+
+struct StoreLock {
+    path: PathBuf,
+}
+
+impl Drop for StoreLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+fn acquire_store_lock() -> Result<StoreLock> {
+    let path = get_accounts_lock_file()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create config directory: {}", parent.display()))?;
+    }
+
+    let deadline = Instant::now() + LOCK_TIMEOUT;
+    loop {
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                let _ = writeln!(
+                    file,
+                    "pid={} time={:?}",
+                    std::process::id(),
+                    SystemTime::now()
+                );
+                return Ok(StoreLock { path });
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                if lock_is_stale(&path) {
+                    let _ = fs::remove_file(&path);
+                    continue;
+                }
+
+                if Instant::now() >= deadline {
+                    anyhow::bail!(
+                        "Timed out waiting for account store lock: {}",
+                        path.display()
+                    );
+                }
+
+                thread::sleep(LOCK_RETRY_DELAY);
+            }
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("Failed to acquire store lock: {}", path.display()));
+            }
+        }
+    }
+}
+
+fn lock_is_stale(path: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    let Ok(modified) = metadata.modified() else {
+        return false;
+    };
+    modified
+        .elapsed()
+        .is_ok_and(|elapsed| elapsed > STALE_LOCK_MAX_AGE)
 }
 
 /// Add a new account to the store
 pub fn add_account(account: StoredAccount) -> Result<StoredAccount> {
-    let mut store = load_accounts()?;
-
-    // Check for duplicate names
-    if store.accounts.iter().any(|a| a.name == account.name) {
-        anyhow::bail!("An account with name '{}' already exists", account.name);
-    }
-
     let account_clone = account.clone();
-    store.accounts.push(account);
+    mutate_store(true, move |store| {
+        if store
+            .accounts
+            .iter()
+            .any(|existing| existing.name == account.name)
+        {
+            anyhow::bail!("An account with name '{}' already exists", account.name);
+        }
 
-    // If this is the first account, make it active
-    if store.accounts.len() == 1 {
-        store.active_account_id = Some(account_clone.id.clone());
-    }
+        store.accounts.push(account);
+        if store.accounts.len() == 1 {
+            store.active_account_id = Some(account_clone.id.clone());
+        }
 
-    save_accounts(&store)?;
-    Ok(account_clone)
+        Ok(account_clone)
+    })
 }
 
 /// Remove an account by ID
 pub fn remove_account(account_id: &str) -> Result<()> {
-    let mut store = load_accounts()?;
+    mutate_store(true, |store| {
+        let initial_len = store.accounts.len();
+        store.accounts.retain(|account| account.id != account_id);
 
-    let initial_len = store.accounts.len();
-    store.accounts.retain(|a| a.id != account_id);
+        if store.accounts.len() == initial_len {
+            anyhow::bail!("Account not found: {account_id}");
+        }
 
-    if store.accounts.len() == initial_len {
-        anyhow::bail!("Account not found: {account_id}");
-    }
+        if store.active_account_id.as_deref() == Some(account_id) {
+            store.active_account_id = store.accounts.first().map(|account| account.id.clone());
+        }
 
-    // If we removed the active account, clear it or set to first available
-    if store.active_account_id.as_deref() == Some(account_id) {
-        store.active_account_id = store.accounts.first().map(|a| a.id.clone());
-    }
-
-    save_accounts(&store)?;
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Update the active account ID
 pub fn set_active_account(account_id: &str) -> Result<()> {
-    let mut store = load_accounts()?;
+    mutate_store(true, |store| {
+        if !store
+            .accounts
+            .iter()
+            .any(|account| account.id == account_id)
+        {
+            anyhow::bail!("Account not found: {account_id}");
+        }
 
-    // Verify the account exists
-    if !store.accounts.iter().any(|a| a.id == account_id) {
-        anyhow::bail!("Account not found: {account_id}");
+        store.active_account_id = Some(account_id.to_string());
+        Ok(())
+    })
+}
+
+/// Merge imported accounts into the local store, skipping duplicate ids and names.
+pub fn merge_imported_accounts(imported: AccountsStore) -> Result<ImportAccountsSummary> {
+    mutate_store(true, move |store| Ok(merge_accounts_store(store, imported)))
+}
+
+fn merge_accounts_store(
+    current: &mut AccountsStore,
+    imported: AccountsStore,
+) -> ImportAccountsSummary {
+    let imported_version = imported.version;
+    let imported_active_id = imported.active_account_id;
+    let total_in_payload = imported.accounts.len();
+    let mut imported_count = 0usize;
+    let mut existing_ids = current
+        .accounts
+        .iter()
+        .map(|account| account.id.clone())
+        .collect::<std::collections::HashSet<_>>();
+    let mut existing_names = current
+        .accounts
+        .iter()
+        .map(|account| account.name.clone())
+        .collect::<std::collections::HashSet<_>>();
+
+    for account in imported.accounts {
+        if existing_ids.contains(&account.id) || existing_names.contains(&account.name) {
+            continue;
+        }
+        existing_ids.insert(account.id.clone());
+        existing_names.insert(account.name.clone());
+        current.accounts.push(account);
+        imported_count += 1;
     }
 
-    store.active_account_id = Some(account_id.to_string());
-    save_accounts(&store)?;
-    Ok(())
+    current.version = current.version.max(imported_version).max(1);
+
+    let current_active_is_valid = current
+        .active_account_id
+        .as_ref()
+        .is_some_and(|id| current.accounts.iter().any(|account| &account.id == id));
+
+    if !current_active_is_valid {
+        if let Some(imported_active) = imported_active_id {
+            if current
+                .accounts
+                .iter()
+                .any(|account| account.id == imported_active)
+            {
+                current.active_account_id = Some(imported_active);
+            } else {
+                current.active_account_id =
+                    current.accounts.first().map(|account| account.id.clone());
+            }
+        } else {
+            current.active_account_id = current.accounts.first().map(|account| account.id.clone());
+        }
+    }
+
+    ImportAccountsSummary {
+        total_in_payload,
+        imported_count,
+        skipped_count: total_in_payload.saturating_sub(imported_count),
+    }
 }
 
 /// Get an account by ID
 pub fn get_account(account_id: &str) -> Result<Option<StoredAccount>> {
     let store = load_accounts()?;
-    Ok(store.accounts.into_iter().find(|a| a.id == account_id))
+    Ok(store
+        .accounts
+        .into_iter()
+        .find(|account| account.id == account_id))
 }
 
 /// Get the currently active account
 pub fn get_active_account() -> Result<Option<StoredAccount>> {
     let store = load_accounts()?;
-    let active_id = match &store.active_account_id {
-        Some(id) => id,
-        None => return Ok(None),
+    let Some(active_id) = &store.active_account_id else {
+        return Ok(None);
     };
-    Ok(store.accounts.into_iter().find(|a| a.id == *active_id))
+    Ok(store
+        .accounts
+        .into_iter()
+        .find(|account| account.id == *active_id))
 }
 
 /// Update an account's last_used_at timestamp
 pub fn touch_account(account_id: &str) -> Result<()> {
-    let mut store = load_accounts()?;
-
-    if let Some(account) = store.accounts.iter_mut().find(|a| a.id == account_id) {
-        account.last_used_at = Some(chrono::Utc::now());
-        save_accounts(&store)?;
-    }
-
-    Ok(())
+    mutate_store(false, |store| {
+        if let Some(account) = store
+            .accounts
+            .iter_mut()
+            .find(|account| account.id == account_id)
+        {
+            account.last_used_at = Some(chrono::Utc::now());
+        }
+        Ok(())
+    })
 }
 
-/// Update an account's metadata (name, email, plan_type, subscription expiry)
+/// Update an account's metadata (name, email, plan_type)
 pub fn update_account_metadata(
     account_id: &str,
     name: Option<String>,
     email: Option<String>,
     plan_type: Option<String>,
-    subscription_expires_at: Option<Option<DateTime<Utc>>>,
-) -> Result<StoredAccount> {
-    let mut store = load_accounts()?;
-
-    // Check for duplicate names first (if renaming)
-    if let Some(ref new_name) = name {
-        if store
-            .accounts
-            .iter()
-            .any(|a| a.id != account_id && a.name == *new_name)
-        {
-            anyhow::bail!("An account with name '{new_name}' already exists");
+) -> Result<()> {
+    mutate_store(false, |store| {
+        if let Some(ref new_name) = name {
+            if store
+                .accounts
+                .iter()
+                .any(|account| account.id != account_id && account.name == *new_name)
+            {
+                anyhow::bail!("An account with name '{new_name}' already exists");
+            }
         }
-    }
 
-    // Now find and update the account
-    let account = store
-        .accounts
-        .iter_mut()
-        .find(|a| a.id == account_id)
-        .context("Account not found")?;
+        let account = store
+            .accounts
+            .iter_mut()
+            .find(|account| account.id == account_id)
+            .context("Account not found")?;
 
-    if let Some(new_name) = name {
-        account.name = new_name;
-    }
+        if let Some(new_name) = name {
+            account.name = new_name;
+        }
 
-    if email.is_some() {
-        account.email = email;
-    }
+        if email.is_some() {
+            account.email = email;
+        }
 
-    if plan_type.is_some() {
-        account.plan_type = plan_type;
-    }
+        if plan_type.is_some() {
+            account.plan_type = plan_type;
+        }
 
-    if let Some(subscription_expires_at) = subscription_expires_at {
-        account.subscription_expires_at = subscription_expires_at;
-    }
-
-    let updated = account.clone();
-    save_accounts(&store)?;
-    Ok(updated)
+        Ok(())
+    })
 }
 
 /// Update ChatGPT OAuth tokens for an account and return the updated account.
@@ -204,50 +474,48 @@ pub fn update_account_chatgpt_tokens(
     chatgpt_account_id: Option<String>,
     email: Option<String>,
     plan_type: Option<String>,
-    subscription_expires_at: Option<DateTime<Utc>>,
 ) -> Result<StoredAccount> {
-    let mut store = load_accounts()?;
+    mutate_store(true, |store| {
+        let is_active = store.active_account_id.as_deref() == Some(account_id);
+        let account = store
+            .accounts
+            .iter_mut()
+            .find(|account| account.id == account_id)
+            .context("Account not found")?;
 
-    let account = store
-        .accounts
-        .iter_mut()
-        .find(|a| a.id == account_id)
-        .context("Account not found")?;
-
-    match &mut account.auth_data {
-        AuthData::ChatGPT {
-            id_token: stored_id_token,
-            access_token: stored_access_token,
-            refresh_token: stored_refresh_token,
-            account_id: stored_account_id,
-        } => {
-            *stored_id_token = id_token;
-            *stored_access_token = access_token;
-            *stored_refresh_token = refresh_token;
-            if let Some(new_account_id) = chatgpt_account_id {
-                *stored_account_id = Some(new_account_id);
+        match &mut account.auth_data {
+            AuthData::ChatGPT {
+                id_token: stored_id_token,
+                access_token: stored_access_token,
+                refresh_token: stored_refresh_token,
+                account_id: stored_account_id,
+            } => {
+                *stored_id_token = id_token;
+                *stored_access_token = access_token;
+                *stored_refresh_token = refresh_token;
+                if let Some(new_account_id) = chatgpt_account_id {
+                    *stored_account_id = Some(new_account_id);
+                }
+            }
+            AuthData::ApiKey { .. } => {
+                anyhow::bail!("Cannot update OAuth tokens for an API key account");
             }
         }
-        AuthData::ApiKey { .. } => {
-            anyhow::bail!("Cannot update OAuth tokens for an API key account");
+
+        if let Some(new_email) = email {
+            account.email = Some(new_email);
         }
-    }
 
-    if let Some(new_email) = email {
-        account.email = Some(new_email);
-    }
+        if let Some(new_plan_type) = plan_type {
+            account.plan_type = Some(new_plan_type);
+        }
 
-    if let Some(new_plan_type) = plan_type {
-        account.plan_type = Some(new_plan_type);
-    }
+        if is_active {
+            store.active_account_id = Some(account.id.clone());
+        }
 
-    if let Some(subscription_expires_at) = subscription_expires_at {
-        account.subscription_expires_at = Some(subscription_expires_at);
-    }
-
-    let updated = account.clone();
-    save_accounts(&store)?;
-    Ok(updated)
+        Ok(account.clone())
+    })
 }
 
 /// Get the list of masked account IDs
@@ -258,8 +526,202 @@ pub fn get_masked_account_ids() -> Result<Vec<String>> {
 
 /// Set the list of masked account IDs
 pub fn set_masked_account_ids(ids: Vec<String>) -> Result<()> {
-    let mut store = load_accounts()?;
-    store.masked_account_ids = ids;
-    save_accounts(&store)?;
-    Ok(())
+    mutate_store(false, |store| {
+        store.masked_account_ids = ids;
+        Ok(())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::auth::switcher::read_current_auth;
+
+    struct TestEnv {
+        _config_dir: tempfile::TempDir,
+        _codex_home: tempfile::TempDir,
+        old_config_dir: Option<String>,
+        old_codex_home: Option<String>,
+    }
+
+    impl TestEnv {
+        fn new() -> Self {
+            let config_dir = tempfile::tempdir().expect("config temp dir");
+            let codex_home = tempfile::tempdir().expect("codex temp dir");
+            let old_config_dir = std::env::var("CODEX_SWITCHER_CONFIG_DIR").ok();
+            let old_codex_home = std::env::var("CODEX_HOME").ok();
+            std::env::set_var("CODEX_SWITCHER_CONFIG_DIR", config_dir.path());
+            std::env::set_var("CODEX_HOME", codex_home.path());
+            Self {
+                _config_dir: config_dir,
+                _codex_home: codex_home,
+                old_config_dir,
+                old_codex_home,
+            }
+        }
+    }
+
+    impl Drop for TestEnv {
+        fn drop(&mut self) {
+            if let Some(value) = &self.old_config_dir {
+                std::env::set_var("CODEX_SWITCHER_CONFIG_DIR", value);
+            } else {
+                std::env::remove_var("CODEX_SWITCHER_CONFIG_DIR");
+            }
+
+            if let Some(value) = &self.old_codex_home {
+                std::env::set_var("CODEX_HOME", value);
+            } else {
+                std::env::remove_var("CODEX_HOME");
+            }
+        }
+    }
+
+    fn api_account(name: &str, key: &str) -> StoredAccount {
+        StoredAccount::new_api_key(name.to_string(), key.to_string())
+    }
+
+    fn chatgpt_account(name: &str, token_suffix: &str) -> StoredAccount {
+        StoredAccount::new_chatgpt(
+            name.to_string(),
+            Some(format!("{name}@example.com")),
+            Some("plus".to_string()),
+            format!("id-{token_suffix}"),
+            format!("access-{token_suffix}"),
+            format!("refresh-{token_suffix}"),
+            Some(format!("acct-{token_suffix}")),
+        )
+    }
+
+    #[test]
+    fn first_add_sets_active_account_and_writes_auth_json() {
+        let _guard = crate::test_support::env_lock();
+        let _env = TestEnv::new();
+
+        let stored = add_account(api_account("Primary", "sk-primary")).expect("add account");
+        let store = load_accounts().expect("load accounts");
+        let auth = read_current_auth()
+            .expect("read auth")
+            .expect("auth should exist");
+
+        assert_eq!(store.active_account_id.as_deref(), Some(stored.id.as_str()));
+        assert_eq!(auth.openai_api_key.as_deref(), Some("sk-primary"));
+    }
+
+    #[test]
+    fn deleting_active_account_promotes_fallback_and_syncs_auth_json() {
+        let _guard = crate::test_support::env_lock();
+        let _env = TestEnv::new();
+
+        let first = add_account(api_account("First", "sk-first")).expect("add first");
+        let second = add_account(api_account("Second", "sk-second")).expect("add second");
+        set_active_account(&second.id).expect("set active");
+        remove_account(&second.id).expect("remove second");
+
+        let store = load_accounts().expect("load accounts");
+        let auth = read_current_auth()
+            .expect("read auth")
+            .expect("auth should exist");
+
+        assert_eq!(store.active_account_id.as_deref(), Some(first.id.as_str()));
+        assert_eq!(auth.openai_api_key.as_deref(), Some("sk-first"));
+    }
+
+    #[test]
+    fn deleting_last_account_clears_auth_json() {
+        let _guard = crate::test_support::env_lock();
+        let _env = TestEnv::new();
+
+        let stored = add_account(api_account("Only", "sk-only")).expect("add account");
+        remove_account(&stored.id).expect("remove account");
+
+        let store = load_accounts().expect("load accounts");
+        assert!(store.active_account_id.is_none());
+        assert!(store.accounts.is_empty());
+        assert!(read_current_auth().expect("read auth").is_none());
+    }
+
+    #[test]
+    fn updating_active_chatgpt_tokens_keeps_auth_json_in_sync() {
+        let _guard = crate::test_support::env_lock();
+        let _env = TestEnv::new();
+
+        let stored = add_account(chatgpt_account("ChatGPT", "old")).expect("add account");
+        let updated = update_account_chatgpt_tokens(
+            &stored.id,
+            "id-new".to_string(),
+            "access-new".to_string(),
+            "refresh-new".to_string(),
+            Some("acct-new".to_string()),
+            Some("fresh@example.com".to_string()),
+            Some("pro".to_string()),
+        )
+        .expect("update tokens");
+        let auth = read_current_auth()
+            .expect("read auth")
+            .expect("auth should exist");
+
+        assert_eq!(updated.email.as_deref(), Some("fresh@example.com"));
+        let tokens = auth.tokens.expect("tokens should exist");
+        assert_eq!(tokens.id_token, "id-new");
+        assert_eq!(tokens.access_token, "access-new");
+        assert_eq!(tokens.refresh_token, "refresh-new");
+        assert_eq!(tokens.account_id.as_deref(), Some("acct-new"));
+    }
+
+    #[test]
+    fn imported_accounts_can_establish_active_account_and_sync_auth_json() {
+        let _guard = crate::test_support::env_lock();
+        let _env = TestEnv::new();
+
+        let imported_first = api_account("Imported 1", "sk-import-1");
+        let imported_second = api_account("Imported 2", "sk-import-2");
+        let summary = merge_imported_accounts(AccountsStore {
+            version: 2,
+            accounts: vec![imported_first.clone(), imported_second.clone()],
+            active_account_id: Some(imported_second.id.clone()),
+            masked_account_ids: Vec::new(),
+        })
+        .expect("merge accounts");
+
+        let store = load_accounts().expect("load accounts");
+        let auth = read_current_auth()
+            .expect("read auth")
+            .expect("auth should exist");
+
+        assert_eq!(summary.total_in_payload, 2);
+        assert_eq!(summary.imported_count, 2);
+        assert_eq!(
+            store.active_account_id.as_deref(),
+            Some(imported_second.id.as_str())
+        );
+        assert_eq!(auth.openai_api_key.as_deref(), Some("sk-import-2"));
+    }
+
+    #[test]
+    fn concurrent_mutations_do_not_lose_changes() {
+        let _guard = crate::test_support::env_lock();
+        let _env = TestEnv::new();
+
+        let stored = add_account(api_account("Original", "sk-original")).expect("add account");
+        let account_id = stored.id.clone();
+
+        let rename_id = account_id.clone();
+        let rename = thread::spawn(move || {
+            update_account_metadata(&rename_id, Some("Renamed".to_string()), None, None)
+                .expect("rename account");
+        });
+
+        let mask_id = account_id.clone();
+        let mask = thread::spawn(move || {
+            set_masked_account_ids(vec![mask_id]).expect("set masked ids");
+        });
+
+        rename.join().expect("rename thread");
+        mask.join().expect("mask thread");
+
+        let store = load_accounts().expect("load accounts");
+        assert_eq!(store.accounts[0].name, "Renamed");
+        assert_eq!(store.masked_account_ids, vec![account_id]);
+    }
 }

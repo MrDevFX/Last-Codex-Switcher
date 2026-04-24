@@ -1,10 +1,12 @@
 //! Authentication module
 
+pub mod backup_key;
 pub mod oauth_server;
 pub mod storage;
 pub mod switcher;
 pub mod token_refresh;
 
+pub use backup_key::*;
 pub use oauth_server::*;
 pub use storage::*;
 pub use switcher::*;

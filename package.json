@@ -6,10 +6,18 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "format": "prettier --write \"src/**/*.{ts,tsx,css}\" package.json vite.config.ts tsconfig.json tsconfig.node.json",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\" package.json vite.config.ts tsconfig.json tsconfig.node.json",
+    "check": "corepack pnpm typecheck && corepack pnpm test && corepack pnpm format:check",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "sh ./scripts/tauri.sh",
-    "lan": "pnpm build && cargo run --manifest-path src-tauri/Cargo.toml --bin codex-web",
+    "build:app": "corepack pnpm tauri build",
+    "build:app:signed": "corepack pnpm tauri build --signed",
+    "tauri": "node scripts/tauri.mjs",
+    "lan": "node scripts/lan.mjs",
     "version:bump": "node scripts/bump-version.mjs",
     "version:patch": "node scripts/bump-version.mjs patch",
     "version:minor": "node scripts/bump-version.mjs minor",
@@ -31,11 +39,17 @@
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.18",
     "@tauri-apps/cli": "^2",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
+    "jsdom": "^29.0.2",
+    "prettier": "^3.8.3",
     "tailwindcss": "^4.1.18",
     "typescript": "~5.8.3",
-    "vite": "^7.0.4"
+    "vite": "^7.0.4",
+    "vitest": "^4.1.5"
   }
 }

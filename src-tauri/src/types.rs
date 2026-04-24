@@ -1,6 +1,5 @@
 //! Core types for Codex Switcher
 
-use base64::Engine;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -9,6 +8,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AccountsStore {
     /// Schema version for future migrations
+    #[serde(default = "default_store_version")]
     pub version: u32,
     /// List of all stored accounts
     pub accounts: Vec<StoredAccount>,
@@ -30,6 +30,10 @@ impl Default for AccountsStore {
     }
 }
 
+fn default_store_version() -> u32 {
+    1
+}
+
 /// A stored account with all its metadata and credentials
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredAccount {
@@ -41,9 +45,6 @@ pub struct StoredAccount {
     pub email: Option<String>,
     /// Plan type: free, plus, pro, team, business, enterprise, edu
     pub plan_type: Option<String>,
-    /// Subscription expiration extracted from ChatGPT ID token, when available
-    #[serde(default)]
-    pub subscription_expires_at: Option<DateTime<Utc>>,
     /// Authentication mode
     pub auth_mode: AuthMode,
     /// Authentication credentials
@@ -62,7 +63,6 @@ impl StoredAccount {
             name,
             email: None,
             plan_type: None,
-            subscription_expires_at: None,
             auth_mode: AuthMode::ApiKey,
             auth_data: AuthData::ApiKey { key: api_key },
             created_at: Utc::now(),
@@ -75,7 +75,6 @@ impl StoredAccount {
         name: String,
         email: Option<String>,
         plan_type: Option<String>,
-        subscription_expires_at: Option<DateTime<Utc>>,
         id_token: String,
         access_token: String,
         refresh_token: String,
@@ -86,7 +85,6 @@ impl StoredAccount {
             name,
             email,
             plan_type,
-            subscription_expires_at,
             auth_mode: AuthMode::ChatGPT,
             auth_data: AuthData::ChatGPT {
                 id_token,
@@ -102,17 +100,18 @@ impl StoredAccount {
 
 /// Authentication mode
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum AuthMode {
     /// Using an OpenAI API key
+    #[serde(rename = "api_key")]
     ApiKey,
     /// Using ChatGPT OAuth tokens
+    #[serde(rename = "chat_gpt", alias = "chatgpt")]
     ChatGPT,
 }
 
 /// Authentication data (credentials)
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
+#[serde(untagged)]
 pub enum AuthData {
     /// API key authentication
     ApiKey {
@@ -132,47 +131,55 @@ pub enum AuthData {
     },
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct ChatGptIdTokenClaims {
-    pub email: Option<String>,
-    pub plan_type: Option<String>,
-    pub account_id: Option<String>,
-    pub subscription_expires_at: Option<DateTime<Utc>>,
-}
+#[cfg(test)]
+mod tests {
+    use super::{AccountsStore, AuthData, AuthMode};
 
-pub fn parse_chatgpt_id_token_claims(id_token: &str) -> ChatGptIdTokenClaims {
-    let parts: Vec<&str> = id_token.split('.').collect();
-    if parts.len() != 3 {
-        return ChatGptIdTokenClaims::default();
+    #[test]
+    fn deserializes_legacy_accounts_store_shape() {
+        let legacy = r#"{
+          "active_account_id": "legacy-1",
+          "accounts": [
+            {
+              "id": "legacy-1",
+              "name": "Legacy Account",
+              "email": "legacy@example.com",
+              "plan_type": "plus",
+              "auth_mode": "chatgpt",
+              "created_at": "2026-04-09T21:29:31.425043700Z",
+              "last_used_at": null,
+              "limit_5h_remaining": "1h 8m",
+              "limit_week_remaining": "4d 21h",
+              "limit_updated_at": "2026-04-13T16:49:44Z",
+              "limit_5h_percent": 100,
+              "limit_week_percent": 53,
+              "auth_data": {
+                "id_token": "id-token",
+                "access_token": "access-token",
+                "refresh_token": "refresh-token",
+                "account_id": "chatgpt-account-id"
+              }
+            }
+          ]
+        }"#;
+
+        let store: AccountsStore = serde_json::from_str(legacy).expect("legacy store should parse");
+        assert_eq!(store.version, 1);
+        assert!(store.masked_account_ids.is_empty());
+        assert_eq!(store.active_account_id.as_deref(), Some("legacy-1"));
+        assert_eq!(store.accounts.len(), 1);
+        assert_eq!(store.accounts[0].auth_mode, AuthMode::ChatGPT);
+        assert!(matches!(
+            store.accounts[0].auth_data,
+            AuthData::ChatGPT { .. }
+        ));
     }
 
-    let payload = match base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(parts[1]) {
-        Ok(bytes) => bytes,
-        Err(_) => return ChatGptIdTokenClaims::default(),
-    };
-
-    let json: serde_json::Value = match serde_json::from_slice(&payload) {
-        Ok(value) => value,
-        Err(_) => return ChatGptIdTokenClaims::default(),
-    };
-
-    let auth_claims = json.get("https://api.openai.com/auth");
-
-    ChatGptIdTokenClaims {
-        email: json.get("email").and_then(|v| v.as_str()).map(String::from),
-        plan_type: auth_claims
-            .and_then(|auth| auth.get("chatgpt_plan_type"))
-            .and_then(|v| v.as_str())
-            .map(String::from),
-        account_id: auth_claims
-            .and_then(|auth| auth.get("chatgpt_account_id"))
-            .and_then(|v| v.as_str())
-            .map(String::from),
-        subscription_expires_at: auth_claims
-            .and_then(|auth| auth.get("chatgpt_subscription_active_until"))
-            .and_then(|v| v.as_str())
-            .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
-            .map(|value| value.with_timezone(&Utc)),
+    #[test]
+    fn deserializes_current_auth_mode_name() {
+        let current = r#""chat_gpt""#;
+        let mode: AuthMode = serde_json::from_str(current).expect("current auth mode should parse");
+        assert_eq!(mode, AuthMode::ChatGPT);
     }
 }
 
@@ -219,7 +226,6 @@ pub struct AccountInfo {
     pub name: String,
     pub email: Option<String>,
     pub plan_type: Option<String>,
-    pub subscription_expires_at: Option<DateTime<Utc>>,
     pub auth_mode: AuthMode,
     pub is_active: bool,
     pub created_at: DateTime<Utc>,
@@ -228,22 +234,11 @@ pub struct AccountInfo {
 
 impl AccountInfo {
     pub fn from_stored(account: &StoredAccount, active_id: Option<&str>) -> Self {
-        let fallback_subscription_expires_at = match &account.auth_data {
-            AuthData::ChatGPT { id_token, .. } => {
-                parse_chatgpt_id_token_claims(id_token).subscription_expires_at
-            }
-            AuthData::ApiKey { .. } => None,
-        };
-
         Self {
             id: account.id.clone(),
             name: account.name.clone(),
             email: account.email.clone(),
             plan_type: account.plan_type.clone(),
-            subscription_expires_at: account
-                .subscription_expires_at
-                .clone()
-                .or(fallback_subscription_expires_at),
             auth_mode: account.auth_mode,
             is_active: active_id == Some(&account.id),
             created_at: account.created_at,
@@ -364,29 +359,4 @@ pub struct CreditStatusDetails {
     pub unlimited: bool,
     #[serde(default)]
     pub balance: Option<String>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::parse_chatgpt_id_token_claims;
-    use base64::Engine;
-
-    #[test]
-    fn parses_subscription_expiry_from_realistic_id_token_claims() {
-        let payload = r#"{"email":"user@example.com","https://api.openai.com/auth":{"chatgpt_plan_type":"plus","chatgpt_account_id":"acc_123","chatgpt_subscription_active_until":"2026-04-23T05:03:38+00:00"}}"#;
-        let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload);
-        let token = format!("header.{encoded}.signature");
-
-        let claims = parse_chatgpt_id_token_claims(&token);
-
-        assert_eq!(claims.email.as_deref(), Some("user@example.com"));
-        assert_eq!(claims.plan_type.as_deref(), Some("plus"));
-        assert_eq!(claims.account_id.as_deref(), Some("acc_123"));
-        assert_eq!(
-            claims
-                .subscription_expires_at
-                .map(|value| value.to_rfc3339()),
-            Some("2026-04-23T05:03:38+00:00".to_string())
-        );
-    }
 }

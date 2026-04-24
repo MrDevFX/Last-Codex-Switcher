@@ -74,11 +74,7 @@ export async function exportFullBackupFile(): Promise<boolean> {
   }
 
   const contentsBase64 = await invokeBackend<string>("export_accounts_full_encrypted_bytes");
-  downloadBase64File(
-    contentsBase64,
-    "codex-switcher-full.cswf",
-    "application/octet-stream"
-  );
+  downloadBase64File(contentsBase64, "codex-switcher-full.cswf", "application/octet-stream");
   return true;
 }
 
@@ -123,11 +119,7 @@ async function fileToBase64(file: File): Promise<string> {
   return window.btoa(binary);
 }
 
-function downloadBase64File(
-  base64: string,
-  fileName: string,
-  mimeType: string
-): void {
+function downloadBase64File(base64: string, fileName: string, mimeType: string): void {
   const binary = window.atob(base64);
   const bytes = new Uint8Array(binary.length);
 

@@ -1,14 +1,14 @@
 //! Account switching logic - writes credentials to ~/.codex/auth.json
 
 use std::fs;
-use std::path::PathBuf;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::Utc;
+use tempfile::NamedTempFile;
 
-use crate::types::{
-    parse_chatgpt_id_token_claims, AuthData, AuthDotJson, StoredAccount, TokenData,
-};
+use crate::types::{AuthData, AuthDotJson, StoredAccount, TokenData};
 
 /// Get the official Codex home directory
 pub fn get_codex_home() -> Result<PathBuf> {
@@ -26,6 +26,18 @@ pub fn get_codex_auth_file() -> Result<PathBuf> {
     Ok(get_codex_home()?.join("auth.json"))
 }
 
+/// Remove the official auth.json file if it exists.
+pub fn clear_current_auth() -> Result<()> {
+    let path = get_codex_auth_file()?;
+    if !path.exists() {
+        return Ok(());
+    }
+
+    fs::remove_file(&path)
+        .with_context(|| format!("Failed to remove auth.json: {}", path.display()))?;
+    Ok(())
+}
+
 /// Switch to a specific account by writing its credentials to ~/.codex/auth.json
 pub fn switch_to_account(account: &StoredAccount) -> Result<()> {
     let codex_home = get_codex_home()?;
@@ -40,15 +52,53 @@ pub fn switch_to_account(account: &StoredAccount) -> Result<()> {
     let content =
         serde_json::to_string_pretty(&auth_json).context("Failed to serialize auth.json")?;
 
-    fs::write(&auth_path, content)
-        .with_context(|| format!("Failed to write auth.json: {}", auth_path.display()))?;
+    write_auth_file_atomic(&auth_path, &content)?;
 
-    // Set restrictive permissions on Unix
+    Ok(())
+}
+
+fn write_auth_file_atomic(path: &Path, content: &str) -> Result<()> {
+    let parent = path
+        .parent()
+        .context("auth.json path did not have a parent directory")?;
+
+    let mut temp_file = NamedTempFile::new_in(parent)
+        .with_context(|| format!("Failed to create temp auth file in {}", parent.display()))?;
+    temp_file
+        .write_all(content.as_bytes())
+        .with_context(|| format!("Failed to write temp auth file for {}", path.display()))?;
+    temp_file
+        .flush()
+        .with_context(|| format!("Failed to flush temp auth file for {}", path.display()))?;
+    temp_file
+        .as_file()
+        .sync_all()
+        .with_context(|| format!("Failed to sync temp auth file for {}", path.display()))?;
+
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let perms = fs::Permissions::from_mode(0o600);
-        fs::set_permissions(&auth_path, perms)?;
+        fs::set_permissions(temp_file.path(), fs::Permissions::from_mode(0o600)).with_context(
+            || format!("Failed to set temp auth permissions for {}", path.display()),
+        )?;
+    }
+
+    temp_file
+        .persist(path)
+        .map_err(|error| error.error)
+        .with_context(|| {
+            format!(
+                "Failed to atomically replace auth file at {}",
+                path.display()
+            )
+        })?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).with_context(|| {
+            format!("Failed to set auth file permissions for {}", path.display())
+        })?;
     }
 
     Ok(())
@@ -95,27 +145,58 @@ pub fn import_from_auth_json_contents(
     account_name: String,
 ) -> Result<StoredAccount> {
     let auth: AuthDotJson =
-        serde_json::from_str(&content).context("Failed to parse auth.json contents")?;
+        serde_json::from_str(content).context("Failed to parse auth.json contents")?;
 
     // Determine auth mode and create account
     if let Some(api_key) = auth.openai_api_key {
         Ok(StoredAccount::new_api_key(account_name, api_key))
     } else if let Some(tokens) = auth.tokens {
-        let claims = parse_chatgpt_id_token_claims(&tokens.id_token);
+        // Try to extract email and plan from id_token
+        let (email, plan_type) = parse_id_token_claims(&tokens.id_token);
 
         Ok(StoredAccount::new_chatgpt(
             account_name,
-            claims.email,
-            claims.plan_type,
-            claims.subscription_expires_at,
+            email,
+            plan_type,
             tokens.id_token,
             tokens.access_token,
             tokens.refresh_token,
-            claims.account_id.or(tokens.account_id),
+            tokens.account_id,
         ))
     } else {
         anyhow::bail!("auth.json contains neither API key nor tokens");
     }
+}
+
+/// Parse claims from a JWT ID token (without validation)
+fn parse_id_token_claims(id_token: &str) -> (Option<String>, Option<String>) {
+    let parts: Vec<&str> = id_token.split('.').collect();
+    if parts.len() != 3 {
+        return (None, None);
+    }
+
+    // Decode the payload (second part)
+    let payload =
+        match base64::Engine::decode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, parts[1]) {
+            Ok(bytes) => bytes,
+            Err(_) => return (None, None),
+        };
+
+    let json: serde_json::Value = match serde_json::from_slice(&payload) {
+        Ok(v) => v,
+        Err(_) => return (None, None),
+    };
+
+    let email = json.get("email").and_then(|v| v.as_str()).map(String::from);
+
+    // Look for plan type in the OpenAI auth claims
+    let plan_type = json
+        .get("https://api.openai.com/auth")
+        .and_then(|auth| auth.get("chatgpt_plan_type"))
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    (email, plan_type)
 }
 
 /// Read the current auth.json file if it exists

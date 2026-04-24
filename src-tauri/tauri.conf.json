@@ -4,23 +4,25 @@
   "version": "0.2.2",
   "identifier": "com.lampese.codex-switcher",
   "build": {
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "corepack pnpm dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm build",
-    "frontendDist": "../dist"
+    "beforeBuildCommand": "corepack pnpm build",
+    "frontendDist": "../build/web"
   },
   "app": {
     "windows": [
       {
         "title": "Codex Switcher",
-        "width": 900,
-        "height": 700,
-        "minWidth": 600,
-        "minHeight": 500
+        "width": 1280,
+        "height": 860,
+        "center": true,
+        "resizable": false,
+        "maximizable": false
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: asset: http://asset.localhost; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; form-action 'none'",
+      "devCsp": "default-src 'self' http://localhost:1420 http://127.0.0.1:1420; script-src 'self' 'unsafe-eval' http://localhost:1420 http://127.0.0.1:1420; style-src 'self' 'unsafe-inline' http://localhost:1420 http://127.0.0.1:1420; img-src 'self' data: asset: http://asset.localhost http://localhost:1420 http://127.0.0.1:1420; font-src 'self' data: http://localhost:1420 http://127.0.0.1:1420; connect-src 'self' ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1420 ws://localhost:1421 http://127.0.0.1:1420 ws://127.0.0.1:1420 ws://127.0.0.1:1421; object-src 'none'; base-uri 'none'; form-action 'none'"
     }
   },
   "bundle": {

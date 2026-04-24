@@ -10,10 +10,11 @@ use commands::{
     add_account_from_file, cancel_login, check_codex_processes, complete_login, delete_account,
     export_accounts_full_encrypted_file, export_accounts_slim_text, get_active_account_info,
     get_masked_account_ids, get_usage, import_accounts_full_encrypted_file,
-    import_accounts_slim_text, list_accounts, refresh_account_metadata, refresh_all_accounts_usage,
-    rename_account, set_masked_account_ids, start_login, switch_account, warmup_account,
-    warmup_all_accounts,
+    import_accounts_slim_text, list_accounts, refresh_all_accounts_usage, rename_account,
+    restart_codex_and_switch_account, set_masked_account_ids, start_login, switch_account,
+    warmup_account, warmup_all_accounts,
 };
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -22,6 +23,12 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
+            if let Some(window) = app.get_webview_window("main") {
+                window.set_resizable(false)?;
+                #[cfg(not(target_os = "macos"))]
+                window.set_maximizable(false)?;
+            }
+
             #[cfg(desktop)]
             app.handle()
                 .plugin(tauri_plugin_updater::Builder::new().build())?;
@@ -33,6 +40,7 @@ pub fn run() {
             get_active_account_info,
             add_account_from_file,
             switch_account,
+            restart_codex_and_switch_account,
             delete_account,
             rename_account,
             export_accounts_slim_text,
@@ -48,7 +56,6 @@ pub fn run() {
             cancel_login,
             // Usage
             get_usage,
-            refresh_account_metadata,
             refresh_all_accounts_usage,
             warmup_account,
             warmup_all_accounts,
@@ -57,4 +64,16 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    pub(crate) fn env_lock() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 }

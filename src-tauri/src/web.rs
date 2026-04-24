@@ -1,4 +1,6 @@
 use std::fs;
+use std::io::Read;
+use std::net::IpAddr;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::Context;
@@ -14,9 +16,35 @@ use crate::commands::{
     complete_login, delete_account, export_accounts_full_encrypted_bytes,
     export_accounts_slim_text, get_active_account_info, get_masked_account_ids, get_usage,
     import_accounts_full_encrypted_bytes, import_accounts_slim_text, list_accounts,
-    refresh_account_metadata, refresh_all_accounts_usage, rename_account, set_masked_account_ids,
-    start_login, switch_account, warmup_account, warmup_all_accounts,
+    refresh_all_accounts_usage, rename_account, restart_codex_and_switch_account,
+    set_masked_account_ids, start_login, switch_account, warmup_account, warmup_all_accounts,
 };
+
+const BASIC_AUTH_REALM: &str = "Codex Switcher";
+const BASIC_AUTH_USERNAME: &str = "codex";
+const MAX_WEB_REQUEST_BODY_BYTES: u64 = 12 * 1024 * 1024;
+const WEB_CONTENT_SECURITY_POLICY: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'";
+
+#[derive(Debug, Clone, Default)]
+pub struct WebServerSecurity {
+    basic_auth_password: Option<String>,
+}
+
+impl WebServerSecurity {
+    pub fn new(basic_auth_password: Option<String>) -> Self {
+        Self {
+            basic_auth_password: basic_auth_password.filter(|value| !value.trim().is_empty()),
+        }
+    }
+
+    fn basic_auth_password(&self) -> Option<&str> {
+        self.basic_auth_password.as_deref()
+    }
+
+    fn basic_auth_enabled(&self) -> bool {
+        self.basic_auth_password().is_some()
+    }
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -70,20 +98,35 @@ struct FileImportArgs {
     name: String,
 }
 
-pub fn run_lan_server(host: &str, port: u16) -> anyhow::Result<()> {
+pub fn is_loopback_host(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+
+    host.parse::<IpAddr>()
+        .is_ok_and(|address| address.is_loopback())
+}
+
+pub fn run_lan_server(host: &str, port: u16, security: WebServerSecurity) -> anyhow::Result<()> {
     let address = format!("{host}:{port}");
     let server = Server::http(&address)
         .map_err(|err| anyhow::anyhow!("Failed to bind HTTP server on {address}: {err}"))?;
     let runtime = Runtime::new().context("Failed to start async runtime")?;
     let dist_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
-        .join("dist");
+        .join("build")
+        .join("web");
 
     println!("Codex Switcher web server listening on http://{address}");
     println!("Serving static files from {}", dist_dir.display());
+    if security.basic_auth_enabled() {
+        println!("HTTP Basic auth enabled for all web requests. Username: {BASIC_AUTH_USERNAME}");
+    } else {
+        println!("Loopback-only mode: HTTP auth disabled because the server is not exposed.");
+    }
 
     for request in server.incoming_requests() {
-        if let Err(error) = handle_request(request, &runtime, &dist_dir) {
+        if let Err(error) = handle_request(request, &runtime, &dist_dir, &security) {
             eprintln!("[web] request failed: {error:#}");
         }
     }
@@ -91,7 +134,17 @@ pub fn run_lan_server(host: &str, port: u16) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn handle_request(mut request: Request, runtime: &Runtime, dist_dir: &Path) -> anyhow::Result<()> {
+fn handle_request(
+    mut request: Request,
+    runtime: &Runtime,
+    dist_dir: &Path,
+    security: &WebServerSecurity,
+) -> anyhow::Result<()> {
+    if !request_is_authorized(&request, security.basic_auth_password()) {
+        respond_unauthorized(request)?;
+        return Ok(());
+    }
+
     let method = request.method().clone();
     let url = request.url().to_string();
 
@@ -125,6 +178,37 @@ fn handle_request(mut request: Request, runtime: &Runtime, dist_dir: &Path) -> a
     Ok(())
 }
 
+fn request_is_authorized(request: &Request, expected_password: Option<&str>) -> bool {
+    let Some(expected_password) = expected_password else {
+        return true;
+    };
+
+    request
+        .headers()
+        .iter()
+        .find(|header| header.field.equiv("Authorization"))
+        .and_then(|header| header.value.as_str().strip_prefix("Basic "))
+        .is_some_and(|value| basic_auth_matches(value.trim(), expected_password))
+}
+
+fn basic_auth_matches(encoded_credentials: &str, expected_password: &str) -> bool {
+    let decoded = match STANDARD.decode(encoded_credentials) {
+        Ok(bytes) => bytes,
+        Err(_) => return false,
+    };
+
+    let decoded = match String::from_utf8(decoded) {
+        Ok(value) => value,
+        Err(_) => return false,
+    };
+
+    let Some((username, password)) = decoded.split_once(':') else {
+        return false;
+    };
+
+    username == BASIC_AUTH_USERNAME && password == expected_password
+}
+
 async fn invoke_web_command(command: &str, payload: Value) -> Result<Value, String> {
     match command {
         "list_accounts" => to_json(list_accounts().await?),
@@ -141,10 +225,6 @@ async fn invoke_web_command(command: &str, payload: Value) -> Result<Value, Stri
             let args: AccountIdArgs = parse_args(payload)?;
             to_json(get_usage(args.account_id).await?)
         }
-        "refresh_account_metadata" => {
-            let args: AccountIdArgs = parse_args(payload)?;
-            to_json(refresh_account_metadata(args.account_id).await?)
-        }
         "refresh_all_accounts_usage" => to_json(refresh_all_accounts_usage().await?),
         "warmup_account" => {
             let args: AccountIdArgs = parse_args(payload)?;
@@ -154,6 +234,10 @@ async fn invoke_web_command(command: &str, payload: Value) -> Result<Value, Stri
         "switch_account" => {
             let args: AccountIdArgs = parse_args(payload)?;
             to_json(switch_account(args.account_id).await?)
+        }
+        "restart_codex_and_switch_account" => {
+            let args: AccountIdArgs = parse_args(payload)?;
+            to_json(restart_codex_and_switch_account(args.account_id).await?)
         }
         "delete_account" => {
             let args: AccountIdArgs = parse_args(payload)?;
@@ -196,17 +280,30 @@ async fn invoke_web_command(command: &str, payload: Value) -> Result<Value, Stri
 }
 
 fn parse_request_json(request: &mut Request) -> anyhow::Result<Value> {
-    let mut body = String::new();
-    request
-        .as_reader()
-        .read_to_string(&mut body)
-        .context("Failed to read request body")?;
+    let body = read_request_body_limited(request.as_reader(), MAX_WEB_REQUEST_BODY_BYTES)?;
 
     if body.trim().is_empty() {
         return Ok(json!({}));
     }
 
     serde_json::from_str(&body).context("Failed to parse request JSON")
+}
+
+fn read_request_body_limited<R: Read + ?Sized>(
+    reader: &mut R,
+    max_bytes: u64,
+) -> anyhow::Result<String> {
+    let mut body = String::new();
+    let mut limited = reader.take(max_bytes + 1);
+    limited
+        .read_to_string(&mut body)
+        .context("Failed to read request body")?;
+
+    if body.len() as u64 > max_bytes {
+        anyhow::bail!("Request body is too large. Maximum allowed size is {max_bytes} bytes.");
+    }
+
+    Ok(body)
 }
 
 fn parse_args<T>(value: Value) -> Result<T, String>
@@ -266,9 +363,14 @@ fn sanitize_path(url: &str) -> anyhow::Result<PathBuf> {
 fn serve_file(request: Request, path: PathBuf) -> anyhow::Result<()> {
     let data = fs::read(&path).with_context(|| format!("Failed to read {}", path.display()))?;
     let mime = mime_type_for_path(&path);
-    let response = Response::from_data(data)
+    let mut response = Response::from_data(data)
         .with_header(header("Content-Type", mime)?)
         .with_header(header("Cache-Control", "no-cache")?);
+
+    for (name, value) in security_header_specs_for_path(&path) {
+        response = response.with_header(header(name, value)?);
+    }
+
     request.respond(response)?;
     Ok(())
 }
@@ -294,10 +396,40 @@ fn respond_text(
     Ok(())
 }
 
+fn respond_unauthorized(request: Request) -> anyhow::Result<()> {
+    let www_authenticate = format!("Basic realm=\"{BASIC_AUTH_REALM}\", charset=\"UTF-8\"");
+    let response = Response::from_string("Authentication required")
+        .with_status_code(StatusCode(401))
+        .with_header(header("Content-Type", "text/plain; charset=utf-8")?)
+        .with_header(header("WWW-Authenticate", &www_authenticate)?)
+        .with_header(header("Cache-Control", "no-store")?);
+    request.respond(response)?;
+    Ok(())
+}
+
 fn header(name: &str, value: &str) -> anyhow::Result<Header> {
     Header::from_bytes(name.as_bytes(), value.as_bytes()).map_err(|_| {
         anyhow::anyhow!("Failed to create header {name}: invalid header value `{value}`")
     })
+}
+
+fn security_header_specs_for_path(path: &Path) -> Vec<(&'static str, &'static str)> {
+    let mut headers = vec![
+        ("X-Content-Type-Options", "nosniff"),
+        ("Referrer-Policy", "no-referrer"),
+    ];
+
+    if is_html_path(path) {
+        headers.push(("Content-Security-Policy", WEB_CONTENT_SECURITY_POLICY));
+    }
+
+    headers
+}
+
+fn is_html_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("html"))
 }
 
 fn mime_type_for_path(path: &Path) -> &'static str {
@@ -319,5 +451,61 @@ fn mime_type_for_path(path: &Path) -> &'static str {
         "txt" => "text/plain; charset=utf-8",
         "webp" => "image/webp",
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        basic_auth_matches, is_loopback_host, read_request_body_limited,
+        security_header_specs_for_path, BASIC_AUTH_USERNAME, WEB_CONTENT_SECURITY_POLICY,
+    };
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use std::io::Cursor;
+    use std::path::Path;
+
+    #[test]
+    fn loopback_host_detection_covers_common_inputs() {
+        assert!(is_loopback_host("127.0.0.1"));
+        assert!(is_loopback_host("::1"));
+        assert!(is_loopback_host("localhost"));
+        assert!(!is_loopback_host("0.0.0.0"));
+        assert!(!is_loopback_host("192.168.1.25"));
+    }
+
+    #[test]
+    fn basic_auth_requires_expected_username_and_password() {
+        let encoded = STANDARD.encode(format!("{BASIC_AUTH_USERNAME}:super-secret"));
+        assert!(basic_auth_matches(&encoded, "super-secret"));
+        assert!(!basic_auth_matches(&encoded, "wrong-secret"));
+
+        let wrong_user = STANDARD.encode("not-codex:super-secret");
+        assert!(!basic_auth_matches(&wrong_user, "super-secret"));
+        assert!(!basic_auth_matches("not-base64", "super-secret"));
+    }
+
+    #[test]
+    fn request_body_reader_rejects_oversized_payloads() {
+        let mut accepted = Cursor::new("abcd");
+        assert_eq!(
+            read_request_body_limited(&mut accepted, 4).expect("body should fit"),
+            "abcd"
+        );
+
+        let mut rejected = Cursor::new("abcde");
+        assert!(read_request_body_limited(&mut rejected, 4).is_err());
+    }
+
+    #[test]
+    fn html_static_files_get_csp_header() {
+        let headers = security_header_specs_for_path(Path::new("index.html"));
+        assert!(headers.contains(&("Content-Security-Policy", WEB_CONTENT_SECURITY_POLICY)));
+        assert!(headers.contains(&("X-Content-Type-Options", "nosniff")));
+
+        let asset_headers = security_header_specs_for_path(Path::new("app.js"));
+        assert!(!asset_headers
+            .iter()
+            .any(|(name, _)| *name == "Content-Security-Policy"));
+        assert!(asset_headers.contains(&("X-Content-Type-Options", "nosniff")));
     }
 }

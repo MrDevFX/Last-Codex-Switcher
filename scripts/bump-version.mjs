@@ -5,16 +5,13 @@ const root = process.cwd();
 const input = process.argv[2];
 
 if (!input) {
-  console.error(
-    "Usage: node scripts/bump-version.mjs <version|major|minor|patch>",
-  );
+  console.error("Usage: node scripts/bump-version.mjs <version|major|minor|patch>");
   process.exit(1);
 }
 
 const isBumpType = ["major", "minor", "patch"].includes(input);
 
-const readFile = (relativePath) =>
-  fs.readFileSync(path.join(root, relativePath), "utf8");
+const readFile = (relativePath) => fs.readFileSync(path.join(root, relativePath), "utf8");
 
 const writeFile = (relativePath, contents) =>
   fs.writeFileSync(path.join(root, relativePath), contents, "utf8");
@@ -29,8 +26,7 @@ const parseVersion = (version) => {
   };
 };
 
-const formatVersion = ({ major, minor, patch }) =>
-  `${major}.${minor}.${patch}`;
+const formatVersion = ({ major, minor, patch }) => `${major}.${minor}.${patch}`;
 
 const bumpVersion = (version, bumpType) => {
   const parsed = parseVersion(version);
@@ -57,9 +53,7 @@ const bumpVersion = (version, bumpType) => {
 };
 
 const packageJson = readFile("package.json");
-const currentVersionMatch = packageJson.match(
-  /"version"\s*:\s*"(\d+\.\d+\.\d+)"/,
-);
+const currentVersionMatch = packageJson.match(/"version"\s*:\s*"(\d+\.\d+\.\d+)"/);
 
 if (!currentVersionMatch) {
   console.error("Could not find version in package.json");
@@ -67,9 +61,7 @@ if (!currentVersionMatch) {
 }
 
 const currentVersion = currentVersionMatch[1];
-const nextVersion = isBumpType
-  ? bumpVersion(currentVersion, input)
-  : input;
+const nextVersion = isBumpType ? bumpVersion(currentVersion, input) : input;
 
 if (!nextVersion || !parseVersion(nextVersion)) {
   console.error(`Invalid version: ${input}`);
@@ -77,41 +69,24 @@ if (!nextVersion || !parseVersion(nextVersion)) {
 }
 
 const replaceJsonVersion = (contents) =>
-  contents.replace(
-    /"version"\s*:\s*"\d+\.\d+\.\d+"/,
-    `"version": "${nextVersion}"`,
-  );
+  contents.replace(/"version"\s*:\s*"\d+\.\d+\.\d+"/, `"version": "${nextVersion}"`);
 
 const replaceCargoVersion = (contents) =>
-  contents.replace(
-    /^version\s*=\s*"\d+\.\d+\.\d+"/m,
-    `version = "${nextVersion}"`,
-  );
+  contents.replace(/^version\s*=\s*"\d+\.\d+\.\d+"/m, `version = "${nextVersion}"`);
 
 const replaceCargoLockVersion = (contents) => {
   const blockRegex =
     /(\[\[package\]\]\nname = "codex-switcher"\nversion = ")\d+\.\d+\.\d+("[\s\S]*?\n\n)/;
   if (!blockRegex.test(contents)) {
-    console.error(
-      "Could not find codex-switcher package in Cargo.lock",
-    );
+    console.error("Could not find codex-switcher package in Cargo.lock");
     process.exit(1);
   }
   return contents.replace(blockRegex, `$1${nextVersion}$2`);
 };
 
 writeFile("package.json", replaceJsonVersion(packageJson));
-writeFile(
-  "src-tauri/tauri.conf.json",
-  replaceJsonVersion(readFile("src-tauri/tauri.conf.json")),
-);
-writeFile(
-  "src-tauri/Cargo.toml",
-  replaceCargoVersion(readFile("src-tauri/Cargo.toml")),
-);
-writeFile(
-  "src-tauri/Cargo.lock",
-  replaceCargoLockVersion(readFile("src-tauri/Cargo.lock")),
-);
+writeFile("src-tauri/tauri.conf.json", replaceJsonVersion(readFile("src-tauri/tauri.conf.json")));
+writeFile("src-tauri/Cargo.toml", replaceCargoVersion(readFile("src-tauri/Cargo.toml")));
+writeFile("src-tauri/Cargo.lock", replaceCargoLockVersion(readFile("src-tauri/Cargo.lock")));
 
 console.log(`Version bumped: ${currentVersion} -> ${nextVersion}`);

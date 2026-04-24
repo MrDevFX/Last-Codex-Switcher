@@ -547,6 +547,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-process",
  "tauri-plugin-updater",
+ "tempfile",
  "thiserror 2.0.18",
  "tiny_http",
  "tokio",
@@ -554,6 +555,7 @@ dependencies = [
  "urlencoding",
  "uuid",
  "webbrowser",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
