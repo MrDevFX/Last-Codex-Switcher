@@ -72,5 +72,4 @@ jobs:
             build/tauri-target/release/bundle/**/*.deb
             build/tauri-target/release/bundle/**/*.rpm
             build/tauri-target/release/bundle/**/*.AppImage
-            build/tauri-target/release/bundle/**/*.tar.gz
             build/tauri-target/release/bundle/**/*.json
