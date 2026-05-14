@@ -5,8 +5,12 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
 use crate::auth::oauth_server::{start_oauth_login, wait_for_oauth_login, OAuthLoginResult};
-use crate::auth::{add_account, load_accounts, set_active_account, touch_account};
+use crate::auth::{
+    add_account, add_account_with_auto_name, load_accounts, set_active_account, touch_account,
+};
 use crate::types::{AccountInfo, OAuthLoginInfo};
+
+const AUTO_ACCOUNT_NAME_PREFIX: &str = "AC";
 
 struct PendingOAuth {
     rx: oneshot::Receiver<anyhow::Result<OAuthLoginResult>>,
@@ -18,7 +22,7 @@ static PENDING_OAUTH: Mutex<Option<PendingOAuth>> = Mutex::new(None);
 
 /// Start the OAuth login flow
 #[tauri::command]
-pub async fn start_login(account_name: String) -> Result<OAuthLoginInfo, String> {
+pub async fn start_login(account_name: Option<String>) -> Result<OAuthLoginInfo, String> {
     // Cancel any previous pending flow so it does not keep the callback port occupied.
     if let Some(previous) = {
         let mut pending = PENDING_OAUTH.lock().unwrap();
@@ -27,6 +31,7 @@ pub async fn start_login(account_name: String) -> Result<OAuthLoginInfo, String>
         previous.cancelled.store(true, Ordering::Relaxed);
     }
 
+    let account_name = account_name.unwrap_or_default();
     let (info, rx, cancelled) = start_oauth_login(account_name)
         .await
         .map_err(|e| e.to_string())?;
@@ -55,7 +60,12 @@ pub async fn complete_login() -> Result<AccountInfo, String> {
         .map_err(|e| e.to_string())?;
 
     // Add the account to storage
-    let stored = add_account(account).map_err(|e| e.to_string())?;
+    let stored = if account.name.trim().is_empty() {
+        add_account_with_auto_name(account, AUTO_ACCOUNT_NAME_PREFIX)
+    } else {
+        add_account(account)
+    }
+    .map_err(|e| e.to_string())?;
 
     // Make it active and update last-used metadata.
     set_active_account(&stored.id).map_err(|e| e.to_string())?;

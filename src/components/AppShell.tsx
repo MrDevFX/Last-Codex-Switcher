@@ -33,17 +33,18 @@ export function AppShell({
 }: AppShellProps) {
   return (
     <div
-      className={`h-dvh overflow-hidden bg-transparent text-[color:var(--text-strong)] ${
+      className={`h-dvh overflow-hidden text-[color:var(--text-strong)] ${
         isWindowFullscreen ? "app-shell-fullscreen" : ""
       }`}
     >
       <div className="app-backdrop flex h-full min-h-0 flex-col overflow-hidden">
-        <div className="app-titlebar flex h-11 shrink-0 items-center border-b border-[color:var(--border-soft)] px-3">
+        <div className="app-titlebar flex h-[42px] shrink-0 items-center px-3">
           <div
             onMouseDown={onTitlebarDrag}
             onDoubleClick={onTitlebarDoubleClick}
             className={`h-full flex-1 select-none cursor-default ${isMacOs ? "ml-18" : ""}`}
           />
+          <span className="app-titlebar-label">Codex Switcher</span>
           {!isMacOs && (
             <div className="window-controls ml-3 flex h-full items-stretch">
               <button

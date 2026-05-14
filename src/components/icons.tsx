@@ -59,8 +59,9 @@ export function EyeOffIcon(props: IconProps) {
 export function RefreshIcon(props: IconProps) {
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" {...props}>
-      <path d="M20 6v5h-5" strokeLinecap="round" strokeLinejoin="round" />
-      <path d="M20 11a8 8 0 1 0 2 5.3" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M23 4v6h-6" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M1 20v-6h6" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }

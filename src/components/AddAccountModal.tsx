@@ -11,8 +11,8 @@ import { CloseIcon, CopyIcon, ExternalIcon, FolderIcon, RefreshIcon } from "./ic
 interface AddAccountModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onImportFile: (source: FileSource, name: string) => Promise<void>;
-  onStartOAuth: (name: string) => Promise<{ auth_url: string }>;
+  onImportFile: (source: FileSource) => Promise<void>;
+  onStartOAuth: () => Promise<{ auth_url: string }>;
   onCompleteOAuth: () => Promise<unknown>;
   onCancelOAuth: () => Promise<void>;
 }
@@ -28,7 +28,6 @@ export function AddAccountModal({
   onCancelOAuth,
 }: AddAccountModalProps) {
   const [activeTab, setActiveTab] = useState<Tab>("oauth");
-  const [name, setName] = useState("");
   const [fileSource, setFileSource] = useState<FileSource | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -39,7 +38,6 @@ export function AddAccountModal({
   const tauriRuntime = isTauriRuntime();
 
   const resetForm = () => {
-    setName("");
     setFileSource(null);
     setError(null);
     setLoading(false);
@@ -49,27 +47,19 @@ export function AddAccountModal({
   };
 
   const handleClose = () => {
-    if (oauthPending) {
-      void onCancelOAuth();
-    }
+    if (oauthPending) void onCancelOAuth();
     resetForm();
     onClose();
   };
 
   const handleOAuthLogin = async () => {
-    if (!name.trim()) {
-      setError("Please enter an account name");
-      return;
-    }
-
     try {
       setLoading(true);
       setError(null);
-      const info = await onStartOAuth(name.trim());
+      const info = await onStartOAuth();
       setAuthUrl(info.auth_url);
       setOauthPending(true);
       setLoading(false);
-
       await onCompleteOAuth();
       handleClose();
     } catch (err) {
@@ -89,19 +79,11 @@ export function AddAccountModal({
   };
 
   const handleImportFile = async () => {
-    if (!name.trim()) {
-      setError("Please enter an account name");
-      return;
-    }
-    if (!fileSource) {
-      setError("Please select an auth.json file");
-      return;
-    }
-
+    if (!fileSource) { setError("Please select an auth.json file"); return; }
     try {
       setLoading(true);
       setError(null);
-      await onImportFile(fileSource, name.trim());
+      await onImportFile(fileSource);
       handleClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -112,192 +94,184 @@ export function AddAccountModal({
   if (!isOpen) return null;
 
   return (
-    <div className="modal-backdrop z-50">
-      <div className="modal-panel panel-surface max-w-2xl">
-        <div className="flex items-center justify-between gap-3 border-b border-[color:var(--border-soft)] px-6 py-5">
+    <div className="modal-backdrop">
+      <div className="modal">
+        {/* Head */}
+        <div className="modal-head">
           <div>
-            <div className="section-kicker">Account intake</div>
-            <h2 className="mt-2 text-2xl font-semibold tracking-[-0.04em] text-[color:var(--text-strong)]">
-              Add account
-            </h2>
+            <div className="kicker">Account intake</div>
+            <h3 className="modal-title">Add account</h3>
+            <p className="modal-sub">Sign in with OAuth or import an existing auth.json file.</p>
           </div>
           <button
             type="button"
             onClick={handleClose}
-            className="toolbar-button !min-h-11 !w-11 !rounded-2xl !px-0"
+            className="icon-btn flex-shrink-0"
             title="Close"
+            aria-label="Close"
           >
             <CloseIcon className="h-4 w-4" />
           </button>
         </div>
 
-        <div className="px-6 py-5">
-          <div className="grid gap-2 rounded-[22px] border border-[color:var(--border-soft)] bg-white/5 p-2 sm:grid-cols-2">
-            {(["oauth", "import"] as Tab[]).map((tab) => (
-              <button
-                type="button"
-                key={tab}
-                onClick={() => {
-                  if (tab === "import" && oauthPending) {
-                    void onCancelOAuth().catch((err) => {
-                      console.error("Failed to cancel login:", err);
-                    });
-                    setOauthPending(false);
-                    setLoading(false);
-                  }
-                  setActiveTab(tab);
-                  setError(null);
-                }}
-                className={`tab-button ${activeTab === tab ? "tab-button-active" : ""}`}
-              >
-                {tab === "oauth" ? "ChatGPT login" : "Import file"}
-              </button>
-            ))}
-          </div>
-
-          <div className="mt-5 space-y-5">
-            <div>
-              <label className="mb-2 block text-sm font-medium text-[color:var(--text-muted)]">
-                Account name
-              </label>
-              <input
-                type="text"
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                placeholder="e.g. Work account"
-                className="field-shell"
-              />
-            </div>
-
-            {activeTab === "oauth" && (
-              <div className="rounded-[22px] border border-[color:var(--border-soft)] bg-white/5 p-4">
-                {oauthPending ? (
-                  <div className="space-y-4">
-                    <div className="flex items-center gap-3">
-                      <RefreshIcon className="h-5 w-5 animate-spin text-[color:var(--accent)]" />
-                      <div>
-                        <div className="text-sm font-semibold text-[color:var(--text-strong)]">
-                          Waiting for browser login
-                        </div>
-                        <p className="mt-1 text-xs leading-5 text-[color:var(--text-muted)]">
-                          Open the generated link in your browser, then come back here once the
-                          callback lands on localhost.
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="rounded-[18px] border border-[color:var(--border-soft)] bg-black/10 p-3">
-                      <div className="text-[11px] uppercase tracking-[0.18em] text-[color:var(--text-faint)]">
-                        Login URL
-                      </div>
-                      <div className="mt-2 break-all text-xs leading-6 text-[color:var(--text-muted)]">
-                        {authUrl}
-                      </div>
-                    </div>
-
-                    <div className="flex flex-col gap-3 sm:flex-row">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          void navigator.clipboard
-                            .writeText(authUrl)
-                            .then(() => {
-                              setCopied(true);
-                              window.setTimeout(() => setCopied(false), 2000);
-                            })
-                            .catch(() => {
-                              setError("Clipboard unavailable. Copy the link manually.");
-                            });
-                        }}
-                        className="toolbar-button justify-center"
-                      >
-                        <CopyIcon className="h-4 w-4" />
-                        {copied ? "Copied" : "Copy link"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          void openExternalUrl(authUrl);
-                        }}
-                        className="toolbar-button toolbar-button-primary justify-center"
-                      >
-                        <ExternalIcon className="h-4 w-4" />
-                        Open in browser
-                      </button>
-                    </div>
-
-                    {!tauriRuntime && (
-                      <p className="text-xs leading-6 text-amber-700 dark:text-amber-200">
-                        OAuth login must finish on the same host machine because the callback
-                        redirects to `localhost`.
-                      </p>
-                    )}
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    <div className="section-kicker">Browser flow</div>
-                    <p className="text-sm leading-6 text-[color:var(--text-muted)]">
-                      Generate a login link, finish the authentication in your browser, and the
-                      account will return to this desktop app automatically.
-                    </p>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {activeTab === "import" && (
-              <div className="rounded-[22px] border border-[color:var(--border-soft)] bg-white/5 p-4">
-                <label className="mb-2 block text-sm font-medium text-[color:var(--text-muted)]">
-                  Select auth.json file
-                </label>
-                <div className="flex flex-col gap-3 sm:flex-row">
-                  <div className="field-shell flex-1 truncate">
-                    {describeFileSource(fileSource)}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={handleSelectFile}
-                    className="toolbar-button justify-center"
-                  >
-                    <FolderIcon className="h-4 w-4" />
-                    Browse
-                  </button>
-                </div>
-                <p className="mt-3 text-xs leading-6 text-[color:var(--text-faint)]">
-                  Import credentials from an existing Codex `auth.json` file.
-                </p>
-              </div>
-            )}
-
-            {error && (
-              <div className="rounded-[20px] border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm leading-6 text-red-700 dark:text-red-200">
-                {error}
-              </div>
-            )}
-          </div>
+        {/* Tabs */}
+        <div className="modal-tabs">
+          {(["oauth", "import"] as Tab[]).map((tab) => (
+            <button
+              type="button"
+              key={tab}
+              onClick={() => {
+                if (tab === "import" && oauthPending) {
+                  void onCancelOAuth().catch((err) => console.error("Failed to cancel login:", err));
+                  setOauthPending(false);
+                  setLoading(false);
+                }
+                setActiveTab(tab);
+                setError(null);
+              }}
+              className={`modal-tab ${activeTab === tab ? "active" : ""}`}
+            >
+              {tab === "oauth" ? "ChatGPT login" : "Import file"}
+            </button>
+          ))}
         </div>
 
-        <div className="flex flex-col gap-3 border-t border-[color:var(--border-soft)] px-6 py-5 sm:flex-row sm:justify-end">
-          <button type="button" onClick={handleClose} className="toolbar-button justify-center">
+        {/* Body */}
+        <div className="modal-body">
+          {activeTab === "oauth" && (
+            <div>
+              {oauthPending ? (
+                <div className="flex flex-col gap-4">
+                  <div className="flex items-center gap-3">
+                    <RefreshIcon className="h-5 w-5 animate-spin" style={{ color: "var(--accent)" }} />
+                    <div>
+                      <div style={{ fontSize: 13.5, fontWeight: 500, color: "var(--text-strong)" }}>
+                        Waiting for browser login
+                      </div>
+                      <p style={{ margin: "3px 0 0", fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
+                        Open the generated link in your browser, then come back once the callback lands on localhost.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div
+                    style={{
+                      padding: "12px 14px",
+                      borderRadius: 12,
+                      border: "1px solid var(--hairline)",
+                      background: "var(--glass-1)",
+                    }}
+                  >
+                    <div className="field-label">Login URL</div>
+                    <div style={{ fontSize: 11.5, color: "var(--text-muted)", wordBreak: "break-all", lineHeight: 1.5 }}>
+                      {authUrl}
+                    </div>
+                  </div>
+
+                  <div className="flex gap-3 flex-col sm:flex-row">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void navigator.clipboard.writeText(authUrl)
+                          .then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 2000); })
+                          .catch(() => setError("Clipboard unavailable. Copy the link manually."));
+                      }}
+                      className="btn-ghost flex-1 justify-center"
+                    >
+                      <CopyIcon className="h-4 w-4" />
+                      {copied ? "Copied" : "Copy link"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void openExternalUrl(authUrl)}
+                      className="btn-primary flex-1 justify-center"
+                    >
+                      <ExternalIcon className="h-4 w-4" />
+                      Open in browser
+                    </button>
+                  </div>
+
+                  {!tauriRuntime && (
+                    <p style={{ fontSize: 11.5, color: "var(--warning)", lineHeight: 1.5 }}>
+                      OAuth login must finish on the same host machine because the callback redirects to `localhost`.
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <div>
+                  <div className="kicker-faint" style={{ marginBottom: 6 }}>Browser flow</div>
+                  <p style={{ margin: 0, fontSize: 13, color: "var(--text-muted)", lineHeight: 1.55 }}>
+                    Generate a login link, finish the authentication in your browser, and the account will return to this desktop app automatically.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
+
+          {activeTab === "import" && (
+            <div className="flex flex-col gap-3">
+              <label className="field-label" style={{ marginBottom: 0 }}>
+                Select auth.json file
+              </label>
+              <div className="flex gap-3 items-stretch">
+                <div
+                  className="field-input flex-1 truncate flex items-center"
+                  style={{ cursor: "default" }}
+                >
+                  {describeFileSource(fileSource)}
+                </div>
+                <button
+                  type="button"
+                  onClick={handleSelectFile}
+                  className="btn-ghost flex-shrink-0"
+                >
+                  <FolderIcon className="h-4 w-4" />
+                  Browse
+                </button>
+              </div>
+              <p style={{ margin: 0, fontSize: 11.5, color: "var(--text-faint)", lineHeight: 1.5 }}>
+                Import credentials from an existing Codex `auth.json` file.
+              </p>
+            </div>
+          )}
+
+          {error && (
+            <div
+              style={{
+                padding: "10px 14px",
+                borderRadius: 12,
+                border: "1px solid oklch(0.72 0.18 22 / 0.3)",
+                background: "oklch(0.72 0.18 22 / 0.1)",
+                fontSize: 12.5,
+                color: "oklch(0.72 0.18 22)",
+                lineHeight: 1.5,
+              }}
+            >
+              {error}
+            </div>
+          )}
+        </div>
+
+        {/* Foot */}
+        <div className="modal-foot">
+          <button type="button" onClick={handleClose} className="btn-ghost">
             Cancel
           </button>
           <button
             type="button"
-            onClick={
-              activeTab === "oauth" ? () => void handleOAuthLogin() : () => void handleImportFile()
-            }
+            onClick={activeTab === "oauth" ? () => void handleOAuthLogin() : () => void handleImportFile()}
             disabled={isPrimaryDisabled}
-            className="toolbar-button toolbar-button-primary justify-center"
+            className="btn-primary flex-1"
           >
             {activeTab === "oauth" ? (
               <>
                 <ExternalIcon className="h-4 w-4" />
-                {loading ? "Generating..." : "Generate login link"}
+                {loading ? "Generating…" : "Generate login link"}
               </>
             ) : (
               <>
                 <FolderIcon className="h-4 w-4" />
-                {loading ? "Importing..." : "Import account"}
+                {loading ? "Importing…" : "Import account"}
               </>
             )}
           </button>

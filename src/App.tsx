@@ -91,7 +91,6 @@ function App() {
   const [warmupToast, setWarmupToast] = useState<ToastState | null>(null);
   const [maskedAccounts, setMaskedAccounts] = useState<Set<string>>(new Set());
   const [otherAccountsSort, setOtherAccountsSort] = useState<SortMode>("deadline_asc");
-  const [isWindowExpanded, setIsWindowExpanded] = useState(false);
   const [isWindowFullscreen, setIsWindowFullscreen] = useState(false);
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
     if (typeof window === "undefined") return "light";
@@ -132,24 +131,18 @@ function App() {
 
   const handleTitlebarDrag = useCallback((event: MouseEvent<HTMLDivElement>) => {
     const appWindow = getAppWindow();
-    if (!appWindow || event.button !== 0) return;
+    if (!appWindow || event.button !== 0 || isWindowFullscreen) return;
     void appWindow.startDragging();
-  }, []);
+  }, [isWindowFullscreen]);
 
   const toggleFullscreenMode = useCallback(() => {
     const appWindow = getAppWindow();
     if (!appWindow) return;
-
-    const nextFullscreenState = !isWindowFullscreen;
+    const next = !isWindowFullscreen;
     void appWindow
-      .setFullscreen(nextFullscreenState)
-      .then(() => {
-        setIsWindowFullscreen(nextFullscreenState);
-        setIsWindowExpanded(nextFullscreenState);
-      })
-      .catch((err) => {
-        console.error("Failed to toggle fullscreen:", err);
-      });
+      .setFullscreen(next)
+      .then(() => setIsWindowFullscreen(next))
+      .catch((err) => { console.error("Failed to toggle fullscreen:", err); });
   }, [isWindowFullscreen]);
 
   const handleTitlebarDoubleClick = useCallback(() => {
@@ -198,6 +191,7 @@ function App() {
   useEffect(() => {
     const isDark = themeMode === "dark";
     document.documentElement.classList.toggle("dark", isDark);
+    document.documentElement.setAttribute("data-theme", themeMode);
     try {
       window.localStorage.setItem(THEME_STORAGE_KEY, themeMode);
     } catch {
@@ -236,35 +230,23 @@ function App() {
 
     let unlisten: (() => void) | undefined;
 
-    const syncMaximizedState = async () => {
+    const syncFullscreen = async () => {
       try {
-        const [isMaximized, isFullscreen] = await Promise.all([
-          appWindow.isMaximized(),
-          appWindow.isFullscreen(),
-        ]);
-        setIsWindowFullscreen(isFullscreen);
-        setIsWindowExpanded(isMaximized || isFullscreen);
+        const fullscreen = await appWindow.isFullscreen();
+        setIsWindowFullscreen(fullscreen);
       } catch (err) {
         console.error("Failed to read window state:", err);
       }
     };
 
-    void syncMaximizedState();
+    void syncFullscreen();
 
     appWindow
-      .onResized(() => {
-        void syncMaximizedState();
-      })
-      .then((fn) => {
-        unlisten = fn;
-      })
-      .catch((err) => {
-        console.error("Failed to watch window resize:", err);
-      });
+      .onResized(() => { void syncFullscreen(); })
+      .then((fn) => { unlisten = fn; })
+      .catch((err) => { console.error("Failed to watch window resize:", err); });
 
-    return () => {
-      unlisten?.();
-    };
+    return () => { unlisten?.(); };
   }, []);
 
   const toggleMaskAll = () => {
@@ -626,7 +608,7 @@ function App() {
             attentionCount={attentionCount}
             switchingId={switchingId}
             isRefreshing={isRefreshing}
-            isWindowMaximized={isWindowExpanded}
+            isWindowMaximized={isWindowFullscreen}
             allMasked={allMasked}
             restartSwitchEnabled={restartSwitchEnabled}
             maskedAccounts={maskedAccounts}

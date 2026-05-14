@@ -6,6 +6,7 @@ pub mod commands;
 pub mod types;
 pub mod web;
 
+use tauri::Manager;
 use commands::{
     add_account_from_file, cancel_login, check_codex_processes, complete_login, delete_account,
     export_accounts_full_encrypted_file, export_accounts_slim_text, get_active_account_info,
@@ -14,7 +15,6 @@ use commands::{
     restart_codex_and_switch_account, set_masked_account_ids, start_login, switch_account,
     warmup_account, warmup_all_accounts,
 };
-use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {

@@ -17,14 +17,12 @@ function formatResetTime(resetAt: number | null | undefined): string {
 
 function formatExactResetTime(resetAt: number | null | undefined): string {
   if (!resetAt) return "";
-
   const date = new Date(resetAt * 1000);
   const month = new Intl.DateTimeFormat(undefined, { month: "long" }).format(date);
   const day = date.getDate();
   const minutes = String(date.getMinutes()).padStart(2, "0");
   const period = date.getHours() >= 12 ? "PM" : "AM";
   const hour12 = date.getHours() % 12 || 12;
-
   return `${month} ${day}, ${hour12}:${minutes} ${period}`;
 }
 
@@ -48,41 +46,35 @@ function RateLimitBar({
   resetsAt?: number | null;
 }) {
   const remainingPercent = Math.max(0, 100 - usedPercent);
-  const colorStyle =
-    remainingPercent <= 10
-      ? "var(--track-low)"
-      : remainingPercent <= 30
-        ? "var(--track-mid)"
-        : "var(--track-high)";
+  const fillClass =
+    remainingPercent <= 20 ? "usage-fill low" :
+    remainingPercent <= 40 ? "usage-fill mid" :
+    "usage-fill";
 
   const windowLabel = formatWindowDuration(windowMinutes);
   const resetLabel = formatResetTime(resetsAt);
   const exactResetLabel = formatExactResetTime(resetsAt);
 
   return (
-    <div className="space-y-2">
-      <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
-        <div className="text-xs font-semibold uppercase tracking-[0.18em] text-[color:var(--text-faint)]">
-          {label} {windowLabel && `(${windowLabel})`}
-        </div>
-        <div className="text-xs font-mono text-[color:var(--text-muted)]">
-          {remainingPercent.toFixed(0)}% left
-          {resetLabel && ` - resets ${resetLabel}`}
-        </div>
+    <div className="usage-row">
+      <div className="usage-row-head">
+        <span className="usage-label">
+          {label}{windowLabel ? ` (${windowLabel})` : ""}
+        </span>
+        <span className="usage-pct">
+          {remainingPercent.toFixed(0)}%{" "}
+          <span style={{ color: "var(--text-muted)", marginLeft: 2 }}>left</span>
+          {resetLabel ? ` · resets ${resetLabel}` : ""}
+        </span>
       </div>
-
-      <div className="h-2 rounded-full bg-[color:var(--track-bg)] p-[2px]">
+      <div className="usage-track">
         <div
-          className="h-full rounded-full transition-all duration-300"
-          style={{
-            width: `${Math.min(remainingPercent, 100)}%`,
-            background: colorStyle,
-          }}
+          className={fillClass}
+          style={{ width: `${Math.min(remainingPercent, 100)}%` }}
         />
       </div>
-
       {exactResetLabel && (
-        <div className="text-[11px] text-[color:var(--text-faint)]">{exactResetLabel}</div>
+        <div className="usage-reset">{exactResetLabel}</div>
       )}
     </div>
   );
@@ -91,12 +83,12 @@ function RateLimitBar({
 export function UsageBar({ usage, loading }: UsageBarProps) {
   if (loading && !usage) {
     return (
-      <div className="space-y-3">
-        <div className="text-xs italic text-[color:var(--text-faint)] animate-pulse">
-          Fetching usage...
+      <div className="usage-row">
+        <div className="usage-label animate-pulse" style={{ fontStyle: "italic" }}>
+          Fetching usage…
         </div>
-        <div className="h-2 rounded-full bg-[color:var(--track-bg)] overflow-hidden">
-          <div className="h-full w-2/3 animate-pulse rounded-full bg-white/20" />
+        <div className="usage-track">
+          <div className="usage-fill animate-pulse" style={{ width: "60%", opacity: 0.3 }} />
         </div>
       </div>
     );
@@ -104,35 +96,59 @@ export function UsageBar({ usage, loading }: UsageBarProps) {
 
   if (!usage) {
     return (
-      <div className="rounded-[18px] border border-dashed border-[color:var(--border-soft)] px-4 py-3 text-xs italic text-[color:var(--text-faint)]">
-        Fetching usage...
+      <div
+        className="usage-reset"
+        style={{
+          padding: "10px 12px",
+          border: "1px dashed var(--hairline)",
+          borderRadius: 12,
+          fontStyle: "italic",
+        }}
+      >
+        Fetching usage…
       </div>
     );
   }
 
   if (usage.error) {
     return (
-      <div className="rounded-[18px] border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm leading-6 text-red-700 dark:text-red-200">
+      <div
+        style={{
+          padding: "10px 12px",
+          borderRadius: 12,
+          border: "1px solid oklch(0.72 0.18 22 / 0.3)",
+          background: "oklch(0.72 0.18 22 / 0.1)",
+          fontSize: 12.5,
+          color: "oklch(0.72 0.18 22)",
+          lineHeight: 1.5,
+        }}
+      >
         {usage.error}
       </div>
     );
   }
 
-  const hasPrimary =
-    usage.primary_used_percent !== null && usage.primary_used_percent !== undefined;
-  const hasSecondary =
-    usage.secondary_used_percent !== null && usage.secondary_used_percent !== undefined;
+  const hasPrimary = usage.primary_used_percent !== null && usage.primary_used_percent !== undefined;
+  const hasSecondary = usage.secondary_used_percent !== null && usage.secondary_used_percent !== undefined;
 
   if (!hasPrimary && !hasSecondary) {
     return (
-      <div className="rounded-[18px] border border-dashed border-[color:var(--border-soft)] px-4 py-3 text-xs italic text-[color:var(--text-faint)]">
+      <div
+        className="usage-reset"
+        style={{
+          padding: "10px 12px",
+          border: "1px dashed var(--hairline)",
+          borderRadius: 12,
+          fontStyle: "italic",
+        }}
+      >
         No rate limit data
       </div>
     );
   }
 
   return (
-    <div className="space-y-4">
+    <div className="flex flex-col gap-4">
       {hasPrimary && (
         <RateLimitBar
           label="5h limit"
@@ -150,8 +166,9 @@ export function UsageBar({ usage, loading }: UsageBarProps) {
         />
       )}
       {usage.credits_balance !== null && usage.credits_balance !== undefined && (
-        <div className="text-xs text-[color:var(--text-muted)]">
-          Credits balance: <span className="font-mono">{usage.credits_balance}</span>
+        <div className="usage-reset">
+          Credits balance:{" "}
+          <span style={{ color: "var(--text-muted)" }}>{usage.credits_balance}</span>
         </div>
       )}
     </div>

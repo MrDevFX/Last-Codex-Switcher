@@ -1,8 +1,8 @@
 //! Account management Tauri commands
 
 use crate::auth::{
-    add_account, create_chatgpt_account_from_refresh_token, get_active_account,
-    get_full_backup_key, get_or_create_full_backup_key, import_from_auth_json,
+    add_account, add_account_with_auto_name, create_chatgpt_account_from_refresh_token,
+    get_active_account, get_full_backup_key, get_or_create_full_backup_key, import_from_auth_json,
     import_from_auth_json_contents, load_accounts, merge_imported_accounts, remove_account,
     set_active_account, touch_account,
 };
@@ -44,6 +44,7 @@ const LEGACY_FULL_PRESET_PASSPHRASE: &str = "gT7kQ9mV2xN4pL8sR1dH6zW3cB5yF0uJ_aE
 const MAX_IMPORT_JSON_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_IMPORT_FILE_BYTES: u64 = 8 * 1024 * 1024;
 const SLIM_IMPORT_CONCURRENCY: usize = 6;
+const AUTO_ACCOUNT_NAME_PREFIX: &str = "AC";
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct SlimPayload {
@@ -97,12 +98,15 @@ pub async fn get_active_account_info() -> Result<Option<AccountInfo>, String> {
 
 /// Add an account from an auth.json file
 #[tauri::command]
-pub async fn add_account_from_file(path: String, name: String) -> Result<AccountInfo, String> {
+pub async fn add_account_from_file(
+    path: String,
+    name: Option<String>,
+) -> Result<AccountInfo, String> {
     // Import from the file
-    let account = import_from_auth_json(&path, name).map_err(|e| e.to_string())?;
+    let account_name = name.unwrap_or_default();
+    let account = import_from_auth_json(&path, account_name).map_err(|e| e.to_string())?;
 
-    // Add to storage
-    let stored = add_account(account).map_err(|e| e.to_string())?;
+    let stored = add_imported_account(account).map_err(|e| e.to_string())?;
 
     let store = load_accounts().map_err(|e| e.to_string())?;
     let active_id = store.active_account_id.as_deref();
@@ -112,16 +116,26 @@ pub async fn add_account_from_file(path: String, name: String) -> Result<Account
 
 /// Add an account from uploaded auth.json contents.
 pub async fn add_account_from_auth_json_text(
-    name: String,
+    name: Option<String>,
     contents: String,
 ) -> Result<AccountInfo, String> {
-    let account = import_from_auth_json_contents(&contents, name).map_err(|e| e.to_string())?;
-    let stored = add_account(account).map_err(|e| e.to_string())?;
+    let account_name = name.unwrap_or_default();
+    let account =
+        import_from_auth_json_contents(&contents, account_name).map_err(|e| e.to_string())?;
+    let stored = add_imported_account(account).map_err(|e| e.to_string())?;
 
     let store = load_accounts().map_err(|e| e.to_string())?;
     let active_id = store.active_account_id.as_deref();
 
     Ok(AccountInfo::from_stored(&stored, active_id))
+}
+
+fn add_imported_account(account: StoredAccount) -> anyhow::Result<StoredAccount> {
+    if account.name.trim().is_empty() {
+        add_account_with_auto_name(account, AUTO_ACCOUNT_NAME_PREFIX)
+    } else {
+        add_account(account)
+    }
 }
 
 /// Switch to a different account

@@ -31,27 +31,12 @@ export function MetricCard({
   compact?: boolean;
   tone?: "default" | "nested";
 }) {
+  void compact; void tone;
   return (
-    <div
-      className={`${tone === "nested" ? "metric-card-nested" : "panel-surface"} rounded-[24px] ${
-        compact ? "p-3.5 lg:p-4" : "p-4 lg:p-5"
-      }`}
-    >
-      <div className="section-kicker">{label}</div>
-      <div
-        className={`mt-3 font-semibold tracking-[-0.05em] text-[color:var(--text-strong)] ${
-          compact ? "text-[1.28rem] lg:text-[1.4rem]" : "text-[1.7rem]"
-        }`}
-      >
-        {value}
-      </div>
-      <p
-        className={`mt-2 text-[color:var(--text-muted)] ${
-          compact ? "text-xs leading-5" : "text-sm leading-6"
-        }`}
-      >
-        {note}
-      </p>
+    <div className="metric">
+      <div className="metric-label">{label}</div>
+      <div className="metric-value">{value}</div>
+      <div className="metric-note">{note}</div>
     </div>
   );
 }
@@ -78,7 +63,7 @@ export function ToolbarActionButton({
       disabled={disabled}
       title={title}
       aria-label={title}
-      className={`toolbar-button ${className}`}
+      className={`icon-btn-lg ${className}`}
     >
       {icon}
       <span className="hidden xl:inline">{label}</span>
@@ -97,12 +82,22 @@ export function SectionHeading({
 }) {
   return (
     <div>
-      {eyebrow && <div className="section-kicker">{eyebrow}</div>}
-      <h3 className="mt-2 text-xl font-semibold tracking-[-0.04em] text-[color:var(--text-strong)]">
+      {eyebrow && <div className="kicker">{eyebrow}</div>}
+      <h3
+        style={{
+          margin: "4px 0 0",
+          fontSize: 17,
+          fontWeight: 600,
+          letterSpacing: "-0.025em",
+          color: "var(--text-strong)",
+        }}
+      >
         {title}
       </h3>
       {description && (
-        <p className="mt-1 text-sm leading-6 text-[color:var(--text-muted)]">{description}</p>
+        <p style={{ margin: "4px 0 0", fontSize: 12.5, color: "var(--text-muted)", lineHeight: 1.5 }}>
+          {description}
+        </p>
       )}
     </div>
   );
@@ -120,13 +115,13 @@ export function SettingsPanel({
   className?: string;
 }) {
   return (
-    <section className={`panel-surface rounded-[28px] p-5 lg:p-6 ${className}`}>
-      <div className="section-kicker">Settings</div>
-      <h3 className="mt-2 text-xl font-semibold tracking-[-0.04em] text-[color:var(--text-strong)]">
-        {title}
-      </h3>
-      <p className="mt-2 text-sm leading-6 text-[color:var(--text-muted)]">{description}</p>
-      <div className="mt-5 space-y-3">{children}</div>
+    <section className={`settings-panel ${className}`}>
+      <div className="kicker">Settings</div>
+      <h3>{title}</h3>
+      <p style={{ margin: "4px 0 16px", fontSize: 12.5, color: "var(--text-muted)", lineHeight: 1.5 }}>
+        {description}
+      </p>
+      <div>{children}</div>
     </section>
   );
 }
@@ -150,27 +145,22 @@ export function SettingsAction({
   trailing?: ReactNode;
   showChevron?: boolean;
 }) {
+  void tone;
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`toolbar-button w-full items-start justify-between rounded-[22px] px-4 py-4 text-left ${
-        tone === "primary" ? "toolbar-button-primary" : ""
-      }`}
+      className="action-row"
     >
-      <span className="flex min-w-0 items-start gap-3">
-        <span className="mt-0.5 rounded-2xl border border-white/10 bg-black/10 p-2">{icon}</span>
-        <span className="min-w-0">
-          <span className="block text-sm font-semibold">{title}</span>
-          <span className="mt-1 block text-xs leading-5 opacity-80">{description}</span>
-        </span>
+      <span className="action-icon">{icon}</span>
+      <span className="action-meta">
+        <strong>{title}</strong>
+        <span>{description}</span>
       </span>
-      {trailing ? (
-        <span className="ml-3 shrink-0">{trailing}</span>
-      ) : showChevron ? (
-        <ChevronRightIcon className="mt-1 h-4 w-4 shrink-0 opacity-70" />
-      ) : null}
+      <span className="action-trail">
+        {trailing ?? (showChevron ? <ChevronRightIcon className="h-4 w-4" style={{ color: "var(--text-faint)" }} /> : null)}
+      </span>
     </button>
   );
 }
@@ -190,15 +180,22 @@ export function StatePanel({
   loading?: boolean;
   tone?: "default" | "danger";
 }) {
+  void tone;
   return (
-    <div className="panel-surface rounded-[30px] px-6 py-10 lg:px-8 lg:py-14">
+    <div className="glass-surface rounded-[var(--radius-panel)] px-6 py-10 lg:px-8 lg:py-14">
       <div className="mx-auto max-w-2xl text-center">
         <div
-          className={`mx-auto flex h-16 w-16 items-center justify-center rounded-[1.4rem] border ${
-            tone === "danger"
-              ? "border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-300"
-              : "border-[color:var(--border-soft)] bg-white/5 text-[color:var(--accent)]"
-          }`}
+          style={{
+            width: 64,
+            height: 64,
+            borderRadius: 22,
+            border: `1px solid ${tone === "danger" ? "oklch(0.72 0.18 22 / 0.3)" : "var(--hairline)"}`,
+            background: tone === "danger" ? "oklch(0.72 0.18 22 / 0.1)" : "var(--glass-1)",
+            color: tone === "danger" ? "oklch(0.72 0.18 22)" : "var(--accent)",
+            display: "grid",
+            placeItems: "center",
+            margin: "0 auto",
+          }}
         >
           {loading ? (
             <RefreshIcon className="h-7 w-7 animate-spin" />
@@ -208,11 +205,21 @@ export function StatePanel({
             <PlusIcon className="h-7 w-7" />
           )}
         </div>
-        <div className="section-kicker mt-5">{eyebrow}</div>
-        <h3 className="mt-2 text-2xl font-semibold tracking-[-0.05em] text-[color:var(--text-strong)]">
+        <div className="kicker mt-5">{eyebrow}</div>
+        <h3
+          style={{
+            margin: "6px 0 0",
+            fontSize: 22,
+            fontWeight: 600,
+            letterSpacing: "-0.035em",
+            color: "var(--text-strong)",
+          }}
+        >
           {title}
         </h3>
-        <p className="mt-3 text-sm leading-7 text-[color:var(--text-muted)]">{description}</p>
+        <p style={{ margin: "10px 0 0", fontSize: 13.5, color: "var(--text-muted)", lineHeight: 1.6 }}>
+          {description}
+        </p>
         {action && <div className="mt-6 flex justify-center">{action}</div>}
       </div>
     </div>

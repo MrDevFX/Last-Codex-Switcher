@@ -291,6 +291,47 @@ pub fn add_account(account: StoredAccount) -> Result<StoredAccount> {
     })
 }
 
+/// Add a new account and assign the next available display name using the given prefix.
+pub fn add_account_with_auto_name(
+    mut account: StoredAccount,
+    prefix: &str,
+) -> Result<StoredAccount> {
+    mutate_store(true, move |store| {
+        account.name = next_auto_account_name(store, prefix);
+        let stored = account.clone();
+
+        store.accounts.push(account);
+        if store.accounts.len() == 1 {
+            store.active_account_id = Some(stored.id.clone());
+        }
+
+        Ok(stored)
+    })
+}
+
+fn next_auto_account_name(store: &AccountsStore, prefix: &str) -> String {
+    let trimmed_prefix = prefix.trim();
+    let prefix = if trimmed_prefix.is_empty() {
+        "Account"
+    } else {
+        trimmed_prefix
+    };
+    let existing_names = store
+        .accounts
+        .iter()
+        .map(|account| account.name.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    let mut index = 1usize;
+
+    loop {
+        let candidate = format!("{prefix} {index}");
+        if !existing_names.contains(candidate.as_str()) {
+            return candidate;
+        }
+        index += 1;
+    }
+}
+
 /// Remove an account by ID
 pub fn remove_account(account_id: &str) -> Result<()> {
     mutate_store(true, |store| {
@@ -639,6 +680,21 @@ mod tests {
         assert!(store.active_account_id.is_none());
         assert!(store.accounts.is_empty());
         assert!(read_current_auth().expect("read auth").is_none());
+    }
+
+    #[test]
+    fn auto_named_accounts_use_next_available_ac_name() {
+        let _guard = crate::test_support::env_lock();
+        let _env = TestEnv::new();
+
+        add_account(api_account("AC 1", "sk-existing")).expect("add existing");
+        let first_auto =
+            add_account_with_auto_name(api_account("", "sk-auto-1"), "AC").expect("add first auto");
+        let second_auto = add_account_with_auto_name(api_account("", "sk-auto-2"), "AC")
+            .expect("add second auto");
+
+        assert_eq!(first_auto.name, "AC 2");
+        assert_eq!(second_auto.name, "AC 3");
     }
 
     #[test]

@@ -10,32 +10,24 @@ export function Toasts({ refreshSuccess, warmupToast, deleteConfirmId }: ToastsP
   return (
     <>
       {refreshSuccess && (
-        <div className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2">
-          <div className="panel-surface rounded-[18px] px-4 py-3 text-sm text-[color:var(--text-strong)]">
-            Usage refreshed successfully.
-          </div>
+        <div className="toast">
+          <span style={{ color: "var(--success)" }}>✓</span>
+          Usage refreshed successfully.
         </div>
       )}
 
       {warmupToast && (
-        <div className="fixed bottom-20 left-1/2 z-50 -translate-x-1/2 px-4">
-          <div
-            className={`rounded-[18px] px-4 py-3 text-sm shadow-2xl ${
-              warmupToast.isError
-                ? "bg-red-500 text-white"
-                : "panel-surface text-[color:var(--text-strong)]"
-            }`}
-          >
-            {warmupToast.message}
-          </div>
+        <div
+          className={warmupToast.isError ? "toast toast-error" : "toast"}
+          style={{ bottom: 64 }}
+        >
+          {warmupToast.message}
         </div>
       )}
 
       {deleteConfirmId && (
-        <div className="fixed bottom-6 left-1/2 z-50 -translate-x-1/2">
-          <div className="rounded-[18px] bg-red-500 px-4 py-3 text-sm text-white shadow-2xl">
-            Click delete again to confirm removal
-          </div>
+        <div className="toast toast-error">
+          Click delete again to confirm removal
         </div>
       )}
     </>

@@ -235,14 +235,13 @@ export function useAccounts() {
   );
 
   const importFromFile = useCallback(
-    async (source: FileSource, name: string) => {
+    async (source: FileSource) => {
       try {
         if (typeof source === "string") {
-          await invokeBackend<AccountInfo>("add_account_from_file", { path: source, name });
+          await invokeBackend<AccountInfo>("add_account_from_file", { path: source });
         } else {
           const contents = await source.text();
           await invokeBackend<AccountInfo>("add_account_from_auth_json_text", {
-            name,
             contents,
           });
         }
@@ -255,11 +254,9 @@ export function useAccounts() {
     [loadAccounts, refreshUsage]
   );
 
-  const startOAuthLogin = useCallback(async (accountName: string) => {
+  const startOAuthLogin = useCallback(async () => {
     try {
-      const info = await invokeBackend<{ auth_url: string; callback_port: number }>("start_login", {
-        accountName,
-      });
+      const info = await invokeBackend<{ auth_url: string; callback_port: number }>("start_login");
       return info;
     } catch (err) {
       throw err;

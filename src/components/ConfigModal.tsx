@@ -27,19 +27,20 @@ export function ConfigModal({
   onImport,
 }: ConfigModalProps) {
   return (
-    <div className="modal-backdrop z-50">
-      <div className="modal-panel panel-surface max-w-3xl">
-        <div className="flex items-center justify-between gap-3 border-b border-[color:var(--border-soft)] px-6 py-5">
+    <div className="modal-backdrop">
+      <div className="modal" style={{ maxWidth: 560 }}>
+        {/* Head */}
+        <div className="modal-head">
           <div>
-            <div className="section-kicker">Slim transfer</div>
-            <h3 className="mt-2 text-xl font-semibold text-[color:var(--text-strong)]">
+            <div className="kicker">Slim transfer</div>
+            <h3 className="modal-title">
               {mode === "slim_export" ? "Export slim text" : "Import slim text"}
             </h3>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="toolbar-button !min-h-11 !w-11 !rounded-2xl !px-0"
+            className="icon-btn flex-shrink-0"
             title="Close"
             aria-label="Close slim transfer modal"
           >
@@ -47,15 +48,35 @@ export function ConfigModal({
           </button>
         </div>
 
-        <div className="space-y-4 px-6 py-5">
+        {/* Body */}
+        <div className="modal-body">
           {mode === "slim_import" ? (
-            <div className="rounded-[20px] border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm leading-6 text-amber-900 dark:text-amber-200">
+            <div
+              style={{
+                padding: "10px 14px",
+                borderRadius: 12,
+                border: "1px solid oklch(0.82 0.16 75 / 0.3)",
+                background: "oklch(0.82 0.16 75 / 0.1)",
+                fontSize: 12.5,
+                color: "oklch(0.74 0.18 75)",
+                lineHeight: 1.5,
+              }}
+            >
               Existing accounts stay in place. Only missing accounts are imported.
             </div>
           ) : (
-            <div className="rounded-[20px] border border-[color:var(--border-soft)] bg-white/5 px-4 py-3 text-sm leading-6 text-[color:var(--text-muted)]">
-              This slim string contains account secrets. Keep it private and share it only on a
-              channel you trust.
+            <div
+              style={{
+                padding: "10px 14px",
+                borderRadius: 12,
+                border: "1px solid var(--hairline)",
+                background: "var(--glass-1)",
+                fontSize: 12.5,
+                color: "var(--text-muted)",
+                lineHeight: 1.5,
+              }}
+            >
+              This slim string contains account secrets. Keep it private and share it only on a channel you trust.
             </div>
           )}
 
@@ -66,7 +87,7 @@ export function ConfigModal({
             placeholder={
               mode === "slim_export"
                 ? isExportingSlim
-                  ? "Generating your slim text payload..."
+                  ? "Generating your slim text payload…"
                   : "The export string will appear here."
                 : "Paste the slim text payload here."
             }
@@ -74,14 +95,25 @@ export function ConfigModal({
           />
 
           {error && (
-            <div className="rounded-[20px] border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-700 dark:text-red-200">
+            <div
+              style={{
+                padding: "10px 14px",
+                borderRadius: 12,
+                border: "1px solid oklch(0.72 0.18 22 / 0.3)",
+                background: "oklch(0.72 0.18 22 / 0.1)",
+                fontSize: 12.5,
+                color: "oklch(0.72 0.18 22)",
+                lineHeight: 1.5,
+              }}
+            >
               {error}
             </div>
           )}
         </div>
 
-        <div className="flex flex-col gap-3 border-t border-[color:var(--border-soft)] px-6 py-5 sm:flex-row sm:justify-end">
-          <button type="button" onClick={onClose} className="toolbar-button justify-center">
+        {/* Foot */}
+        <div className="modal-foot">
+          <button type="button" onClick={onClose} className="btn-ghost">
             Close
           </button>
           {mode === "slim_export" ? (
@@ -89,7 +121,7 @@ export function ConfigModal({
               type="button"
               onClick={onCopy}
               disabled={!payload || isExportingSlim}
-              className="toolbar-button toolbar-button-primary justify-center"
+              className="btn-primary flex-1"
             >
               <ArchiveUpIcon className="h-4 w-4" />
               {copied ? "Copied" : "Copy string"}
@@ -99,10 +131,10 @@ export function ConfigModal({
               type="button"
               onClick={onImport}
               disabled={isImportingSlim}
-              className="toolbar-button toolbar-button-primary justify-center"
+              className="btn-primary flex-1"
             >
               <ArchiveDownIcon className="h-4 w-4" />
-              {isImportingSlim ? "Importing..." : "Import missing accounts"}
+              {isImportingSlim ? "Importing…" : "Import missing accounts"}
             </button>
           )}
         </div>

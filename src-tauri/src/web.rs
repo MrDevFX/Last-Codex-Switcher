@@ -66,7 +66,7 @@ struct RenameAccountArgs {
 #[serde(rename_all = "camelCase")]
 struct LoginArgs {
     #[serde(alias = "account_name")]
-    account_name: String,
+    account_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -81,7 +81,7 @@ struct MaskedIdsArgs {
 
 #[derive(Debug, Deserialize)]
 struct UploadAuthJsonArgs {
-    name: String,
+    name: Option<String>,
     contents: String,
 }
 
@@ -95,7 +95,7 @@ struct UploadEncryptedArgs {
 #[derive(Debug, Deserialize)]
 struct FileImportArgs {
     path: String,
-    name: String,
+    name: Option<String>,
 }
 
 pub fn is_loopback_host(host: &str) -> bool {

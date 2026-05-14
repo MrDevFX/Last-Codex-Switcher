@@ -10,27 +10,32 @@ interface TopBarProps {
 
 export function TopBar({ title, heading, description, actions, compact = false }: TopBarProps) {
   return (
-    <header className="app-topbar relative z-40 shrink-0 border-b border-[color:var(--border-soft)] px-4 py-4 md:px-5 md:py-5 xl:px-8 xl:py-6">
+    <header className="app-topbar">
       <div
-        className={`app-topbar-inner flex flex-col gap-3 ${
-          actions ? "lg:gap-4 xl:flex-row xl:items-end xl:justify-between" : ""
-        }`}
+        className={`app-topbar-inner ${
+          actions ? "xl:flex-row xl:items-end xl:justify-between xl:gap-5" : ""
+        } flex flex-col gap-3`}
       >
-        <div className={compact ? "max-w-2xl" : "max-w-3xl"}>
-          <div className="section-kicker">{title}</div>
+        <div>
+          <div className="kicker">{title}</div>
           <h2
-            className={`mt-2 font-semibold tracking-[-0.05em] text-[color:var(--text-strong)] ${
-              compact
-                ? "text-[1.48rem] lg:text-[1.75rem] xl:text-[1.95rem]"
-                : "text-[1.7rem] lg:text-[2rem] xl:text-[2.35rem]"
-            }`}
+            style={{
+              margin: 0,
+              fontSize: compact ? 22 : 26,
+              fontWeight: 600,
+              letterSpacing: "-0.035em",
+              color: "var(--text-strong)",
+            }}
           >
             {heading}
           </h2>
           <p
-            className={`mt-2 max-w-2xl text-[color:var(--text-muted)] ${
-              compact ? "text-sm leading-6" : "text-sm leading-6 xl:text-[0.98rem] xl:leading-7"
-            }`}
+            style={{
+              margin: "6px 0 0",
+              fontSize: 13.5,
+              color: "var(--text-muted)",
+              lineHeight: 1.55,
+            }}
           >
             {description}
           </p>
